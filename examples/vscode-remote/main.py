@@ -41,6 +41,23 @@ from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import RunCommandOpts
 
 
+async def _generate_ssl_cert(port: int) -> tuple[str, str]:
+    """Generate self-signed SSL certificate for code-server.
+
+    Returns:
+        Tuple of (cert_path, key_path) relative to /workspace
+    """
+    cert_path = f"/workspace/ssl_cert.pem"
+    key_path = f"/workspace/ssl_key.pem"
+
+    # Generate self-signed certificate
+    cert_cmd = (
+        f"openssl req -x509 -newkey rsa:4096 -keyout {key_path} "
+        f"-out {cert_path} -days 365 -nodes -subj '/CN=localhost'"
+    )
+    return cert_path, key_path, cert_cmd
+
+
 @dataclass
 class SandboxInstance:
     """Represents a single VS Code sandbox instance."""
@@ -79,7 +96,7 @@ async def create_instance(
     python_version: str,
     timeout: timedelta,
 ) -> SandboxInstance:
-    """Create a single VS Code sandbox instance."""
+    """Create a single VS Code sandbox instance with SSL support."""
     # Inject Python version into container environment
     env = {"PYTHON_VERSION": python_version}
 
@@ -90,10 +107,22 @@ async def create_instance(
         timeout=timeout,
     )
 
-    # Start code-server with authentication disabled
+    # Generate SSL certificates for code-server
+    cert_path = f"/workspace/ssl_cert.pem"
+    key_path = f"/workspace/ssl_key.pem"
+    cert_cmd = (
+        f"openssl req -x509 -newkey rsa:4096 -keyout {key_path} "
+        f"-out {cert_path} -days 365 -nodes -subj '/CN=localhost'"
+    )
+
+    # Generate the certificate first
+    cert_exec = await sandbox.commands.run(cert_cmd, opts=RunCommandOpts())
+    await _print_logs(f"ssl-gen-{instance_id}", cert_exec)
+
+    # Start code-server with SSL enabled
     # Each instance gets its own workspace directory
     start_exec = await sandbox.commands.run(
-        f"code-server --bind-addr 0.0.0.0:{port} --auth none /workspace/{workspace}",
+        f"code-server --bind-addr 0.0.0.0:{port} --auth none --cert {cert_path} --cert-key {key_path} /workspace/{workspace}",
         opts=RunCommandOpts(background=True),
     )
     await _print_logs(f"code-server-{instance_id}", start_exec)
@@ -257,13 +286,13 @@ Examples:
 
         # Print endpoints for all instances
         print("\n" + "=" * 60)
-        print("VS Code Web Endpoints:")
+        print("VS Code Web Endpoints (HTTPS with SSL):")
         print("=" * 60)
         for instance in instances:
             print(f"\n  Instance {instance.instance_id + 1}:")
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
-            print(f"    URL: http://{instance.endpoint}/")
+            print(f"    URL: https://{instance.endpoint}/")
         print()
 
         # Keep sandboxes alive for the specified timeout

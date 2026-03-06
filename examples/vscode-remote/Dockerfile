@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     gnupg \
     lsb-release \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install code-server
@@ -47,5 +48,6 @@ WORKDIR /workspace
 # Switch to non-root user
 USER vscode
 
-# Default command
+# Default command (SSL disabled by default, enable with --cert and --cert-key)
+# Port 8443 is the standard HTTPS port for code-server
 CMD ["code-server", "--bind-addr", "0.0.0.0:8443", "--auth", "none", "/workspace"]

@@ -10,6 +10,19 @@ The VS Code Remote example extends the basic VS Code example by supporting:
 - **Workspace separation**: Each instance has its own isolated workspace directory
 - **Port allocation**: Automatic port allocation for each instance (e.g., 8443, 8444, 8445)
 - **Configurable timeout**: Control how long sandboxes remain active
+- **SSL/TLS support**: Self-signed certificates are automatically generated for HTTPS
+
+## SSL/TLS Support
+
+This example automatically generates self-signed SSL certificates for each code-server instance, enabling full functionality including:
+
+- **WebSockets support**: Required for real-time features like live share and terminal
+- **Plugin support**: Many VS Code extensions require HTTPS to function properly
+- **Secure connections**: All traffic is encrypted between the browser and code-server
+
+The SSL certificates are generated using OpenSSL with RSA 4096-bit keys and are valid for 365 days. Each instance gets its own certificate stored in `/workspace/ssl_cert.pem` and `/workspace/ssl_key.pem`.
+
+> **Note**: These are self-signed certificates. Browsers will show a security warning, which is expected for development environments. For production use, consider using a proper CA-signed certificate.
 
 ## External Access Configuration
 
@@ -30,6 +43,8 @@ Then access via:
 ```
 https://your-domain.com/sandbox/{sandbox-id}/proxy/{port}/
 ```
+
+The URLs will be HTTPS because code-server is configured with SSL certificates.
 
 ### Option 2: Port Forwarding (Local Development)
 
