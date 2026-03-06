@@ -121,8 +121,9 @@ async def create_instance(
 
     # Start code-server with SSL enabled
     # Each instance gets its own workspace directory
+    # Note: --use-https is required when using --cert flag
     start_exec = await sandbox.commands.run(
-        f"code-server --bind-addr 0.0.0.0:{port} --auth none --cert {cert_path} --cert-key {key_path} /workspace/{workspace}",
+        f"code-server --bind-addr 0.0.0.0:{port} --auth none --use-https --cert {cert_path} --cert-key {key_path} /workspace/{workspace}",
         opts=RunCommandOpts(background=True),
     )
     await _print_logs(f"code-server-{instance_id}", start_exec)
