@@ -77,6 +77,7 @@ async def create_instance(
     config: ConnectionConfig,
     image: str,
     python_version: str,
+    timeout: timedelta,
 ) -> SandboxInstance:
     """Create a single VS Code sandbox instance."""
     # Inject Python version into container environment
@@ -86,6 +87,7 @@ async def create_instance(
         image,
         connection_config=config,
         env=env,
+        timeout=timeout,
     )
 
     # Start code-server with authentication disabled
@@ -112,7 +114,7 @@ async def run_instances(
     instances: int,
     workspace: str,
     start_port: int,
-    timeout_minutes: int,
+    sandbox_timeout: timedelta,
     domain: str,
     api_key: Optional[str],
     image: str,
@@ -134,6 +136,7 @@ async def run_instances(
             config=config,
             image=image,
             python_version=python_version,
+            timeout=sandbox_timeout,
         )
         for i in range(instances)
     ]
@@ -237,12 +240,15 @@ Examples:
     print()
 
     try:
+        # Convert timeout to timedelta
+        sandbox_timeout = timedelta(minutes=args.timeout)
+
         # Run all instances concurrently
         instances = await run_instances(
             instances=args.instances,
             workspace=args.workspace,
             start_port=args.port,
-            timeout_minutes=args.timeout,
+            sandbox_timeout=sandbox_timeout,
             domain=domain,
             api_key=api_key,
             image=image,
