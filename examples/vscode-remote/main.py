@@ -277,8 +277,16 @@ Examples:
         # Clean up all instances
         print("\nCleaning up sandbox instances...")
         for instance in instances:
-            await instance.sandbox.kill()
-        print("All sandbox instances stopped.")
+            try:
+                await instance.sandbox.kill()
+            except Exception as e:
+                # Sandbox may have already been terminated by the server
+                # (e.g., due to timeout or resource limits)
+                print(
+                    f"  Note: Sandbox {instance.instance_id + 1} may have already been "
+                    f"terminated: {e}"
+                )
+        print("Cleanup complete.")
 
 
 if __name__ == "__main__":
