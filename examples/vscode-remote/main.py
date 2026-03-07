@@ -165,6 +165,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--https",
+        action="store_true",
+        default=False,
+        help="Use HTTPS URLs (requires SSL-configured OpenSandbox server)",
+    )
+    parser.add_argument(
         "--instances",
         type=int,
         default=1,
@@ -257,16 +263,17 @@ Examples:
         )
 
         # Print endpoints for all instances
+        protocol = "https" if args.https else "http"
         print("\n" + "=" * 60)
         print(
-            "VS Code Web Endpoints (HTTP - SSL termination handled by OpenSandbox Proxy):"
+            f"VS Code Web Endpoints ({protocol.upper()} - SSL termination handled by OpenSandbox Proxy):"
         )
         print("=" * 60)
         for instance in instances:
             print(f"\n  Instance {instance.instance_id + 1}:")
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
-            print(f"    URL: http://{instance.endpoint}/")
+            print(f"    URL: {protocol}://{instance.endpoint}/")
         print()
 
         # Keep sandboxes alive for the specified timeout

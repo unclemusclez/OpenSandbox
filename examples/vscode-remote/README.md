@@ -248,6 +248,16 @@ uv run python examples/vscode-remote/main.py \
 | `--api-key` | Sandbox API key | (none) |
 | `--image` | Docker image for sandbox | `opensandbox/vscode:latest` |
 | `--python-version` | Python version for the sandbox | `3.11` |
+| `--https` | Use HTTPS URLs (requires SSL-configured OpenSandbox server) | `false` |
+
+### HTTPS Usage
+
+If your OpenSandbox server is configured with SSL certificates (e.g., via nginx reverse proxy), use the `--https` flag:
+
+```shell
+# Use HTTPS URLs (requires SSL-configured OpenSandbox server)
+uv run python examples/vscode-remote/main.py --instances 2 --https
+```
 
 ### Example Output
 
