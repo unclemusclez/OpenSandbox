@@ -13,19 +13,77 @@ The VS Code Remote example extends the basic VS Code example by supporting:
 
 ## SSL/TLS Architecture
 
-This example runs code-server instances over plain HTTP internally. The OpenSandbox server acts as a proxy that can terminate SSL at the edge. This architecture enables:
+This example supports two HTTPS modes:
+
+### Mode 1: Proxy-Based HTTPS (Default)
+
+The OpenSandbox server acts as a proxy that can terminate SSL at the edge. This architecture enables:
 
 - **WebSockets support**: Required for real-time features like live share and terminal
 - **Plugin support**: Many VS Code extensions require HTTPS to function properly
 - **Secure connections**: All traffic is encrypted between the browser and the OpenSandbox server
 
-### How HTTPS Works
+#### How Proxy-Based HTTPS Works
 
 1. **code-server** runs inside the sandbox over plain HTTP (e.g., `http://localhost:8443`)
 2. **OpenSandbox server** proxies requests from the browser to the sandbox
 3. **SSL termination** happens at the OpenSandbox server edge (if configured)
 
 > **Important**: If your OpenSandbox server is not configured with SSL, use `http://` URLs. The `SSL_ERROR_RX_RECORD_TOO_LONG` error occurs when trying to access an HTTP endpoint with HTTPS.
+
+### Mode 2: mkcert Local Development HTTPS
+
+For local development, you can run code-server directly over HTTPS using mkcert-generated certificates. This is useful for testing VS Code extensions that require HTTPS.
+
+#### Quick Start with mkcert
+
+```shell
+# Install mkcert (if not already installed)
+# Windows: winget install FiloSottile.mkcert
+# macOS: brew install mkcert
+# Linux: curl -JLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64" && sudo install mkcert -v /usr/local/bin/
+
+# Install the local CA
+mkcert --install
+
+# Generate wildcard certificate (*.localhost)
+uv run python examples/vscode-remote/generate-certs.py
+
+# Run VS Code instances with HTTPS
+uv run python examples/vscode-remote/main.py --instances 3 --https \
+  --cert ./certs/localhost.pem --key ./certs/localhost-key.pem
+```
+
+#### Per-Sandbox Certificates
+
+For more granular control, generate individual certificates per sandbox:
+
+```shell
+# Generate per-sandbox certificates
+uv run python examples/vscode-remote/generate-certs.py --per-sandbox \
+  --sandbox vscode-8443 --sandbox vscode-8444 --sandbox vscode-8445
+
+# Run with per-sandbox certificates
+uv run python examples/vscode-remote/main.py --instances 3 --https \
+  --cert ./certs/vscode-8443.pem --key ./certs/vscode-8443-key.pem \
+  --cert ./certs/vscode-8444.pem --key ./certs/vscode-8444-key.pem \
+  --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
+```
+
+#### How mkcert HTTPS Works
+
+1. **mkcert** creates a local CA and generates certificates trusted by your browser
+2. **code-server** runs inside the sandbox with `--cert` and `--cert-key` flags
+3. **Browser** trusts the mkcert CA (after installing it once)
+
+> **Note**: This mode is only useful for local development. The mkcert CA must be installed on your machine for browsers to trust the certificates.
+
+#### Security Considerations
+
+- **Local CA only**: mkcert certificates are only trusted on your local machine
+- **Not for production**: Do not use mkcert in production environments
+- **Install CA once**: Run `mkcert --install` once to install the local CA
+- **Certificate expiration**: mkcert certificates expire after 1-2 years; regenerate as needed
 
 ## External Access Configuration
 
@@ -248,15 +306,24 @@ uv run python examples/vscode-remote/main.py \
 | `--api-key` | Sandbox API key | (none) |
 | `--image` | Docker image for sandbox | `opensandbox/vscode:latest` |
 | `--python-version` | Python version for the sandbox | `3.11` |
-| `--https` | Use HTTPS URLs (requires SSL-configured OpenSandbox server) | `false` |
+| `--https` | Use HTTPS (requires --cert and --key flags) | `false` |
+| `--cert` | Certificate file path (can be specified multiple times) | (none) |
+| `--key` | Certificate key file path (can be specified multiple times) | (none) |
 
 ### HTTPS Usage
 
-If your OpenSandbox server is configured with SSL certificates (e.g., via nginx reverse proxy), use the `--https` flag:
+If you have generated certificates using mkcert, use the `--https` flag with `--cert` and `--key`:
 
 ```shell
-# Use HTTPS URLs (requires SSL-configured OpenSandbox server)
-uv run python examples/vscode-remote/main.py --instances 2 --https
+# Use wildcard certificate for all instances
+uv run python examples/vscode-remote/main.py --instances 3 --https \
+  --cert ./certs/localhost.pem --key ./certs/localhost-key.pem
+
+# Use per-sandbox certificates
+uv run python examples/vscode-remote/main.py --instances 3 --https \
+  --cert ./certs/vscode-8443.pem --key ./certs/vscode-8443-key.pem \
+  --cert ./certs/vscode-8444.pem --key ./certs/vscode-8444-key.pem \
+  --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
 ```
 
 ### Example Output
@@ -268,25 +335,27 @@ Starting 3 VS Code sandbox instance(s)...
   Workspace: default
   Port range: 8443 - 8445
   Timeout: 10 minutes
+  HTTPS: Yes
+  Certificate: ./certs/localhost.pem (wildcard)
 
 ============================================================
-VS Code Web Endpoints:
+VS Code Web Endpoints (HTTPS - mkcert local CA)
 ============================================================
 
   Instance 1:
     Workspace: default
     Port: 8443
-    URL: http://127.0.0.1:43876/proxy/8443/
+    URL: https://127.0.0.1:43876/proxy/8443/
 
   Instance 2:
     Workspace: default
     Port: 8444
-    URL: http://127.0.0.1:58260/proxy/8444/
+    URL: https://127.0.0.1:58260/proxy/8444/
 
   Instance 3:
     Workspace: default
     Port: 8445
-    URL: http://127.0.0.1:42981/proxy/8445/
+    URL: https://127.0.0.1:42981/proxy/8445/
 
 Keeping sandboxes alive for 10 minutes. Press Ctrl+C to exit sooner.
 ```
@@ -392,8 +461,28 @@ When running multiple instances, consider:
 - **Disk**: Each sandbox uses disk space for the workspace
 - **Network**: Each instance requires a unique port
 
+## Certificate Generation Script
+
+The `generate-certs.py` script helps you generate mkcert certificates for local development:
+
+```shell
+# Install mkcert CA
+uv run python examples/vscode-remote/generate-certs.py --install-ca
+
+# Generate wildcard certificate (*.localhost)
+uv run python examples/vscode-remote/generate-certs.py
+
+# Generate per-sandbox certificates
+uv run python examples/vscode-remote/generate-certs.py --per-sandbox \
+  --sandbox vscode-8443 --sandbox vscode-8444 --sandbox vscode-8445
+
+# Generate certificates for specific sandbox IDs
+uv run python examples/vscode-remote/generate-certs.py --sandbox my-sandbox
+```
+
 ## References
 
 - [code-server (VS Code Web)](https://github.com/coder/code-server)
+- [mkcert - Trusted local TLS certificates](https://github.com/FiloSottile/mkcert)
 - [Original VS Code Example](../vscode/README.md)
 - [OpenSandbox Documentation](../../docs/README.md)

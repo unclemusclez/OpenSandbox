@@ -15,6 +15,11 @@
 # VS Code Remote Sandbox Image
 # This Dockerfile builds a sandbox image with code-server pre-installed
 # for the multi-instance VS Code remote example.
+#
+# HTTPS Support:
+#   - By default, code-server runs over HTTP
+#   - For HTTPS, mount certificates and use: code-server --cert /certs/server.pem --cert-key /certs/server-key.pem
+#   - mkcert certificates can be generated on host and mounted into container
 
 FROM python:3.11-slim
 
@@ -31,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     lsb-release \
     openssl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install code-server
@@ -40,7 +46,9 @@ RUN curl -fsSL https://code-server.dev/install.sh | sh \
 # Create non-root user for security
 RUN useradd -m -s /bin/bash vscode \
     && mkdir -p /workspace \
-    && chown -R vscode:vscode /workspace
+    && mkdir -p /certs \
+    && chown -R vscode:vscode /workspace \
+    && chown -R vscode:vscode /certs
 
 # Set working directory
 WORKDIR /workspace
@@ -48,6 +56,7 @@ WORKDIR /workspace
 # Switch to non-root user
 USER vscode
 
-# Default command (SSL disabled by default, enable with --cert and --cert-key)
-# Port 8443 is the standard HTTPS port for code-server
-CMD ["code-server", "--bind-addr", "0.0.0.0:8443", "--auth", "none", "/workspace"]
+# Default command (HTTP mode by default)
+# For HTTPS mode, mount certificates and run:
+#   code-server --cert /certs/server.pem --cert-key /certs/server-key.pem --bind-addr 0.0.0.0:44772 /workspace
+CMD ["code-server", "--bind-addr", "0.0.0.0:8443", "--auth", "none", "--disable-telemetry", "/workspace"]
