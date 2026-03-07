@@ -11,15 +11,21 @@ The VS Code Remote example extends the basic VS Code example by supporting:
 - **Port allocation**: Automatic port allocation for each instance (e.g., 8443, 8444, 8445)
 - **Configurable timeout**: Control how long sandboxes remain active
 
-## SSL/TLS Support
+## SSL/TLS Architecture
 
-This example relies on the OpenSandbox server to handle SSL termination. The code-server instances run over plain HTTP internally, and the OpenSandbox server proxy terminates SSL at the edge. This enables full functionality including:
+This example runs code-server instances over plain HTTP internally. The OpenSandbox server acts as a proxy that can terminate SSL at the edge. This architecture enables:
 
 - **WebSockets support**: Required for real-time features like live share and terminal
 - **Plugin support**: Many VS Code extensions require HTTPS to function properly
 - **Secure connections**: All traffic is encrypted between the browser and the OpenSandbox server
 
-> **Note**: For SSL to work properly, your OpenSandbox server must be configured with a valid SSL certificate. See the server configuration documentation for details.
+### How HTTPS Works
+
+1. **code-server** runs inside the sandbox over plain HTTP (e.g., `http://localhost:8443`)
+2. **OpenSandbox server** proxies requests from the browser to the sandbox
+3. **SSL termination** happens at the OpenSandbox server edge (if configured)
+
+> **Important**: If your OpenSandbox server is not configured with SSL, use `http://` URLs. The `SSL_ERROR_RX_RECORD_TOO_LONG` error occurs when trying to access an HTTP endpoint with HTTPS.
 
 ## External Access Configuration
 
@@ -96,6 +102,75 @@ spec:
             name: sandbox-1
             port:
               number: 8443
+```
+
+## Configure SSL for OpenSandbox Server
+
+The OpenSandbox server itself runs over HTTP. To enable HTTPS, you need to place a reverse proxy in front of it. Here's how to configure nginx with SSL:
+
+### Step 1: Generate SSL Certificates
+
+Using Let's Encrypt (recommended for production):
+```bash
+# Install certbot
+sudo apt-get install certbot
+
+# Obtain SSL certificate
+sudo certbot certonly --standalone -d your-domain.com
+```
+
+Using self-signed certificates (for development):
+```bash
+# Generate private key
+openssl genrsa -out server.key 2048
+
+# Generate certificate
+openssl req -new -x509 -key server.key -out server.crt -days 365 -subj "/CN=localhost"
+```
+
+### Step 2: Configure nginx
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate /path/to/server.crt;
+    ssl_certificate_key /path/to/server.key;
+
+    # SSL settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # WebSocket support for code-server
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name your-domain.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+### Step 3: Start nginx
+
+```bash
+sudo nginx -t  # Test configuration
+sudo systemctl start nginx
+sudo systemctl enable nginx
 ```
 
 ## Build the VS Code Sandbox Image
@@ -205,6 +280,8 @@ VS Code Web Endpoints:
 
 Keeping sandboxes alive for 10 minutes. Press Ctrl+C to exit sooner.
 ```
+
+> **Troubleshooting SSL Error**: If you see `SSL_ERROR_RX_RECORD_TOO_LONG` in your browser, it means you're trying to access an HTTP endpoint with HTTPS. The code-server instances run over plain HTTP internally. Use `http://` URLs for local development unless your OpenSandbox server is configured with SSL certificates.
 
 ## Use Cases
 

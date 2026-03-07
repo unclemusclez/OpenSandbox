@@ -258,13 +258,15 @@ Examples:
 
         # Print endpoints for all instances
         print("\n" + "=" * 60)
-        print("VS Code Web Endpoints (HTTPS via OpenSandbox Proxy):")
+        print(
+            "VS Code Web Endpoints (HTTP - SSL termination handled by OpenSandbox Proxy):"
+        )
         print("=" * 60)
         for instance in instances:
             print(f"\n  Instance {instance.instance_id + 1}:")
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
-            print(f"    URL: https://{instance.endpoint}/")
+            print(f"    URL: http://{instance.endpoint}/")
         print()
 
         # Keep sandboxes alive for the specified timeout
