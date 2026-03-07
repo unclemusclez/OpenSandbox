@@ -100,7 +100,7 @@ async def create_instance(
     await _print_logs(f"code-server-{instance_id}", start_exec)
 
     # Get the endpoint for this instance
-    endpoint = await sandbox.get_endpoint(port)
+    endpoint = await sandbox.get_endpoint(port, use_server_proxy=True)
 
     return SandboxInstance(
         instance_id=instance_id,
