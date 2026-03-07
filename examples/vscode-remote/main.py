@@ -94,7 +94,8 @@ async def create_instance(
     # SSL termination is handled by the OpenSandbox server proxy
     # Each instance gets its own workspace directory
     start_exec = await sandbox.commands.run(
-        f"code-server --bind-addr 0.0.0.0:{port} --auth none /workspace/{workspace}",
+        # f"code-server --bind-addr 0.0.0.0:{port} --auth none /workspace/{workspace}",
+        f"code-server --bind-addr 0.0.0.0:{port} --auth none --disable-telemetry /workspace/{workspace}",
         opts=RunCommandOpts(background=True),
     )
     await _print_logs(f"code-server-{instance_id}", start_exec)
