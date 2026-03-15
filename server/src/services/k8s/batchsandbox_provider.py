@@ -16,24 +16,26 @@
 BatchSandbox-based workload provider implementation.
 """
 
-import json
 import logging
+import json
 import shlex
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Callable
-from threading import Lock
+from typing import Dict, List, Any, Optional
 
 from kubernetes.client import (
     V1Container,
     V1EnvVar,
     V1ResourceRequirements,
     V1VolumeMount,
-    ApiException,
 )
 
-from src.config import AppConfig, IngressConfig, INGRESS_MODE_GATEWAY, ExecdInitResources
+from src.config import AppConfig, INGRESS_MODE_GATEWAY
 from src.services.helpers import format_ingress_endpoint
-from src.api.schema import Endpoint, ImageSpec, NetworkPolicy
+from src.api.schema import Endpoint, ImageSpec, NetworkPolicy, Volume
+from src.services.k8s.image_pull_secret_helper import (
+    build_image_pull_secret,
+    build_image_pull_secret_name,
+)
 from src.services.k8s.batchsandbox_template import BatchSandboxTemplateManager
 from src.services.k8s.client import K8sClient
 from src.services.k8s.egress_helper import (
@@ -42,7 +44,7 @@ from src.services.k8s.egress_helper import (
     build_security_context_from_dict,
     serialize_security_context_to_dict,
 )
-from src.services.k8s.informer import WorkloadInformer
+from src.services.k8s.volume_helper import apply_volumes_to_pod_spec
 from src.services.k8s.workload_provider import WorkloadProvider
 from src.services.runtime_resolver import SecureRuntimeResolver
 
@@ -60,26 +62,23 @@ class BatchSandboxProvider(WorkloadProvider):
     def __init__(
         self,
         k8s_client: K8sClient,
-        template_file_path: Optional[str] = None,
-        ingress_config: Optional[IngressConfig] = None,
-        enable_informer: bool = True,
-        informer_factory: Optional[Callable[[str], WorkloadInformer]] = None,
-        informer_resync_seconds: int = 300,
-        informer_watch_timeout_seconds: int = 60,
         app_config: Optional[AppConfig] = None,
-        execd_init_resources: Optional[ExecdInitResources] = None,
     ):
         """
         Initialize BatchSandbox provider.
 
         Args:
             k8s_client: Kubernetes client wrapper
-            template_file_path: Optional path to BatchSandbox CR YAML template file
-            app_config: Optional application config for secure runtime
+            app_config: Application config; kubernetes/ingress sub-configs are read from it directly.
         """
         self.k8s_client = k8s_client
-        self.custom_api = k8s_client.get_custom_objects_api()
-        self.ingress_config = ingress_config
+        self.ingress_config = app_config.ingress if app_config else None
+
+        k8s_config = app_config.kubernetes if app_config else None
+        template_file_path = k8s_config.batchsandbox_template_file if k8s_config else None
+        if template_file_path:
+            logger.info("Using BatchSandbox template file: %s", template_file_path)
+        self.execd_init_resources = k8s_config.execd_init_resources if k8s_config else None
 
         # Initialize secure runtime resolver
         self.resolver = SecureRuntimeResolver(app_config) if app_config else None
@@ -94,22 +93,11 @@ class BatchSandboxProvider(WorkloadProvider):
         
         # Template manager
         self.template_manager = BatchSandboxTemplateManager(template_file_path)
-        self.execd_init_resources = execd_init_resources
-        self._enable_informer = enable_informer
-        self._informer_factory = informer_factory or (
-            lambda ns: WorkloadInformer(
-                custom_api=self.custom_api,
-                group=self.group,
-                version=self.version,
-                plural=self.plural,
-                namespace=ns,
-                resync_period_seconds=informer_resync_seconds,
-                watch_timeout_seconds=informer_watch_timeout_seconds,
-            )
-        )
-        self._informers: Dict[str, WorkloadInformer] = {}
-        self._informers_lock = Lock()
-    
+
+    def supports_image_auth(self) -> bool:
+        """BatchSandbox supports image pull auth via imagePullSecrets injection."""
+        return True
+
     def create_workload(
         self,
         sandbox_id: str,
@@ -124,15 +112,16 @@ class BatchSandboxProvider(WorkloadProvider):
         extensions: Optional[Dict[str, str]] = None,
         network_policy: Optional[NetworkPolicy] = None,
         egress_image: Optional[str] = None,
+        volumes: Optional[List[Volume]] = None,
     ) -> Dict[str, Any]:
         """
         Create a BatchSandbox workload.
-        
+
         Supports both template-based and pool-based creation:
         - Template mode (default): Creates workload with user-specified image, resources, and env
         - Pool mode (when extensions contains 'poolRef'): Creates workload from pre-warmed pool,
           only entrypoint and env can be customized
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             namespace: Kubernetes namespace
@@ -147,9 +136,14 @@ class BatchSandboxProvider(WorkloadProvider):
                 When contains 'poolRef', enables pool-based creation.
             network_policy: Optional network policy for egress traffic control.
                 When provided, an egress sidecar container will be added to the Pod.
-        
+            egress_image: Container image for the egress sidecar (required when network_policy is set).
+            volumes: Optional list of volume mounts for the sandbox.
+
         Returns:
             Dict with 'name' and 'uid' of created BatchSandbox
+
+        Raises:
+            SandboxError: If pool mode is used with volumes (not supported).
         """
         extensions = extensions or {}
 
@@ -163,6 +157,12 @@ class BatchSandboxProvider(WorkloadProvider):
 
         # If poolRef is provided and not empty, create workload from pool
         if extensions.get("poolRef"):
+            # Pool mode does not support volumes
+            if volumes:
+                raise ValueError(
+                    "Pool mode does not support volumes. "
+                    "Remove 'volumes' from request or use template mode."
+                )
             # When using pool, only entrypoint and env can be customized
             return self._create_workload_from_pool(
                 batchsandbox_name=sandbox_id,
@@ -208,6 +208,12 @@ class BatchSandboxProvider(WorkloadProvider):
         if self.runtime_class:
             pod_spec["runtimeClassName"] = self.runtime_class
 
+        # Inject imagePullSecrets if image auth is provided
+        # secret_name is deterministic so it can be embedded before the Secret is created
+        if image_spec.auth:
+            secret_name = build_image_pull_secret_name(sandbox_id)
+            pod_spec["imagePullSecrets"] = [{"name": secret_name}]
+
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(
             pod_spec=pod_spec,
@@ -215,7 +221,11 @@ class BatchSandboxProvider(WorkloadProvider):
             network_policy=network_policy,
             egress_image=egress_image,
         )
-        
+
+        # Add user-specified volumes if provided
+        if volumes:
+            apply_volumes_to_pod_spec(pod_spec, volumes)
+
         # Build runtime-generated BatchSandbox manifest
         # This contains only the essential runtime fields
         runtime_manifest = {
@@ -240,20 +250,41 @@ class BatchSandboxProvider(WorkloadProvider):
         self._merge_pod_spec_extras(batchsandbox, extra_volumes, extra_mounts)
         
         # Create BatchSandbox
-        created = self.custom_api.create_namespaced_custom_object(
+        created = self.k8s_client.create_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
             plural=self.plural,
             body=batchsandbox,
         )
-        
-        informer = self._get_informer(namespace)
-        if informer:
+
+        # Create imagePullSecret with ownerReference pointing to the BatchSandbox
+        if image_spec.auth:
+            secret = build_image_pull_secret(
+                sandbox_id=sandbox_id,
+                image_uri=image_spec.uri,
+                auth=image_spec.auth,
+                owner_uid=created["metadata"]["uid"],
+                owner_api_version=f"{self.group}/{self.version}",
+                owner_kind="BatchSandbox",
+            )
             try:
-                informer.update_cache(created)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("Failed to update informer cache for %s: %s", sandbox_id, exc)
+                self.k8s_client.create_secret(namespace=namespace, body=secret)
+                logger.info("Created imagePullSecret for sandbox %s", sandbox_id)
+            except Exception:
+                logger.warning("Failed to create imagePullSecret for sandbox %s, rolling back BatchSandbox", sandbox_id)
+                try:
+                    self.k8s_client.delete_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        namespace=namespace,
+                        plural=self.plural,
+                        name=sandbox_id,
+                        grace_period_seconds=0,
+                    )
+                except Exception as del_exc:
+                    logger.warning("Failed to rollback BatchSandbox %s: %s", sandbox_id, del_exc)
+                raise
 
         return {
             "name": created["metadata"]["name"],
@@ -310,7 +341,7 @@ class BatchSandboxProvider(WorkloadProvider):
         
         # Pool-based creation does not need template merging
         # Create BatchSandbox directly
-        created = self.custom_api.create_namespaced_custom_object(
+        created = self.k8s_client.create_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -403,7 +434,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 existing.add(name)
             main_container["volumeMounts"] = mounts
 
-    # Todo support empty cmd or env
+    # TODO: support empty cmd or env
     def _build_task_template(
         self,
         entrypoint: List[str],
@@ -600,84 +631,29 @@ class BatchSandboxProvider(WorkloadProvider):
                 result["securityContext"] = security_context_dict
         
         return result
-    
-    def _get_informer(self, namespace: str) -> Optional[WorkloadInformer]:
-        if not self._enable_informer:
-            return None
-
-        with self._informers_lock:
-            informer = self._informers.get(namespace)
-            if informer is None:
-                informer = self._informer_factory(namespace)
-                self._informers[namespace] = informer
-                try:
-                    informer.start()
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning(
-                        "Failed to start informer for namespace %s: %s", namespace, exc
-                    )
-                    self._informers.pop(namespace, None)
-                    return None
-        return informer
 
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
         """Get BatchSandbox by sandbox ID."""
-        informer = self._get_informer(namespace)
-        cache_ready = informer.has_synced if informer else False
-
-        if informer and cache_ready:
-            cached = informer.get(sandbox_id)
-            if cached:
-                return cached
-
-            legacy_name = self.legacy_resource_name(sandbox_id)
-            if legacy_name != sandbox_id:
-                legacy_cached = informer.get(legacy_name)
-                if legacy_cached:
-                    return legacy_cached
-
-        if informer and not cache_ready:
-            logger.warning(
-                f"Informer cache not synced for namespace {namespace}; falling back to direct API get."
-            )
-
-        try:
-            workload = self.custom_api.get_namespaced_custom_object(
-                group=self.group,
-                version=self.version,
-                namespace=namespace,
-                plural=self.plural,
-                name=sandbox_id,
-            )
-            if informer and workload:
-                informer.update_cache(workload)
+        workload = self.k8s_client.get_custom_object(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            name=sandbox_id,
+        )
+        if workload:
             return workload
-        except ApiException as e:
-            if e.status != 404:
-                logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
-                raise
 
         # Fallback for pre-upgrade sandboxes that used "sandbox-<id>" naming
         legacy_name = self.legacy_resource_name(sandbox_id)
         if legacy_name != sandbox_id:
-            try:
-                workload = self.custom_api.get_namespaced_custom_object(
-                    group=self.group,
-                    version=self.version,
-                    namespace=namespace,
-                    plural=self.plural,
-                    name=legacy_name,
-                )
-                if informer and workload:
-                    informer.update_cache(workload)
-                return workload
-            except ApiException as e:
-                if e.status == 404:
-                    return None
-                raise
-            except Exception as e:
-                logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
-                raise
+            return self.k8s_client.get_custom_object(
+                group=self.group,
+                version=self.version,
+                namespace=namespace,
+                plural=self.plural,
+                name=legacy_name,
+            )
 
         return None
     
@@ -687,7 +663,7 @@ class BatchSandboxProvider(WorkloadProvider):
         if not batchsandbox:
             raise Exception(f"BatchSandbox for sandbox {sandbox_id} not found")
         
-        self.custom_api.delete_namespaced_custom_object(
+        self.k8s_client.delete_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -698,25 +674,13 @@ class BatchSandboxProvider(WorkloadProvider):
     
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
         """List BatchSandboxes matching label selector."""
-        try:
-            batchsandbox_list = self.custom_api.list_namespaced_custom_object(
-                group=self.group,
-                version=self.version,
-                namespace=namespace,
-                plural=self.plural,
-                label_selector=label_selector,
-            )
-            return batchsandbox_list.get("items", [])
-        except ApiException as e:
-            # Handle 404 when CRD doesn't exist
-            if e.status == 404:
-                return []
-            # Re-raise other API exceptions
-            raise
-        except Exception as e:
-            # Log and re-raise unexpected errors
-            logger.error(f"Unexpected error listing BatchSandboxes: {e}")
-            raise
+        return self.k8s_client.list_custom_objects(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            label_selector=label_selector,
+        )
     
     def update_expiration(self, sandbox_id: str, namespace: str, expires_at: datetime) -> None:
         """Update BatchSandbox expiration time.
@@ -740,7 +704,7 @@ class BatchSandboxProvider(WorkloadProvider):
             }
         }
         
-        self.custom_api.patch_namespaced_custom_object(
+        self.k8s_client.patch_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -768,7 +732,7 @@ class BatchSandboxProvider(WorkloadProvider):
             # Parse ISO format datetime
             return datetime.fromisoformat(expire_time_str.replace('Z', '+00:00'))
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid expireTime format: {expire_time_str}, error: {e}")
+            logger.warning("Invalid expireTime format: %s, error: %s", expire_time_str, e)
             return None
     
     def _parse_pod_ip(self, workload: Dict[str, Any]) -> Optional[str]:

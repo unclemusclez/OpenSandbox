@@ -61,9 +61,10 @@ def test_proxy_forwards_filtered_headers_and_query(
 ) -> None:
     class StubService:
         @staticmethod
-        def get_endpoint(sandbox_id: str, port: int) -> Endpoint:
+        def get_endpoint(sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
             assert sandbox_id == "sbx-123"
             assert port == 44772
+            assert resolve_internal is True
             return Endpoint(endpoint="10.57.1.91:40109")
 
     monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
@@ -116,7 +117,7 @@ def test_proxy_rejects_websocket_upgrade(
 ) -> None:
     class StubService:
         @staticmethod
-        def get_endpoint(sandbox_id: str, port: int) -> Endpoint:
+        def get_endpoint(sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
             return Endpoint(endpoint="10.57.1.91:40109")
 
     monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
@@ -131,6 +132,29 @@ def test_proxy_rejects_websocket_upgrade(
     assert response.json()["message"] == "Websocket upgrade is not supported yet"
 
 
+def test_proxy_rejects_websocket_upgrade_for_post_and_mixed_case_header(
+    client: TestClient,
+    auth_headers: dict,
+    monkeypatch,
+) -> None:
+    class StubService:
+        @staticmethod
+        def get_endpoint(sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
+            return Endpoint(endpoint="10.57.1.91:40109")
+
+    monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
+    client.app.state.http_client = _FakeAsyncClient()
+
+    response = client.post(
+        "/v1/sandboxes/sbx-123/proxy/44772/ws",
+        headers={**auth_headers, "Upgrade": "WebSocket"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["message"] == "Websocket upgrade is not supported yet"
+
+
 def test_proxy_maps_connect_error_to_502(
     client: TestClient,
     auth_headers: dict,
@@ -138,7 +162,7 @@ def test_proxy_maps_connect_error_to_502(
 ) -> None:
     class StubService:
         @staticmethod
-        def get_endpoint(sandbox_id: str, port: int) -> Endpoint:
+        def get_endpoint(sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
             return Endpoint(endpoint="10.57.1.91:40109")
 
     monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
@@ -162,7 +186,7 @@ def test_proxy_maps_unexpected_error_to_500(
 ) -> None:
     class StubService:
         @staticmethod
-        def get_endpoint(sandbox_id: str, port: int) -> Endpoint:
+        def get_endpoint(sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
             return Endpoint(endpoint="10.57.1.91:40109")
 
     monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
