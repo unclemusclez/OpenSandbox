@@ -13,7 +13,7 @@ The VS Code Remote example extends the basic VS Code example by supporting:
 
 ## SSL/TLS Architecture
 
-This example supports two HTTPS modes:
+This example supports three HTTPS modes:
 
 ### Mode 1: Proxy-Based HTTPS (Default)
 

@@ -48,6 +48,10 @@ from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import RunCommandOpts
 
+# Import nginx and SSL certificate generators (relative imports)
+from nginx_config import NginxConfigGenerator
+from ssl_cert import SSLCertificateGenerator
+
 
 @dataclass
 class SandboxInstance:
@@ -61,6 +65,7 @@ class SandboxInstance:
     https: bool = False
     cert_path: Optional[str] = None
     key_path: Optional[str] = None
+    nginx_config_path: Optional[str] = None  # Path to nginx configuration file
 
 
 def _required_env(name: str) -> str:
@@ -143,6 +148,8 @@ async def create_instance(
     key_path: Optional[str] = None,
     sandbox_id: Optional[str] = None,
     force_https: bool = False,
+    use_nginx: bool = False,
+    nginx_domain: str = "localhost",
 ) -> SandboxInstance:
     """Create a single VS Code sandbox instance."""
     # Inject Python version into container environment
@@ -286,6 +293,42 @@ async def create_instance(
     actual_https = https
     print(f"[DEBUG] Instance {instance_id}: actual_https = {actual_https}")
 
+    # Generate nginx configuration if requested
+    nginx_config_path = None
+    if use_nginx:
+        print(f"[Nginx] Generating configuration for instance {instance_id}...")
+
+        # Create nginx and SSL generators
+        nginx_gen = NginxConfigGenerator()
+        ssl_gen = SSLCertificateGenerator()
+
+        # Generate random subdomain
+        subdomain = ssl_gen.generate_random_subdomain(base_domain=nginx_domain)
+        server_name = subdomain
+
+        # Generate SSL certificate
+        cert_path_nginx, key_path_nginx = ssl_gen.generate_self_signed_cert(
+            server_name=server_name,
+        )
+
+        # Generate nginx configuration
+        nginx_config_path = nginx_gen.generate_config(
+            server_name=server_name,
+            upstream_host="127.0.0.1",
+            upstream_port=port,
+            use_https=True,
+            cert_path=cert_path_nginx,
+            key_path=key_path_nginx,
+        )
+
+        # Enable configuration
+        nginx_gen.enable_config(nginx_config_path)
+
+        # Reload nginx
+        nginx_gen.reload_nginx()
+
+        print(f"[Nginx] Configuration enabled for: https://{server_name}/")
+
     return SandboxInstance(
         instance_id=instance_id,
         workspace=workspace,
@@ -295,6 +338,7 @@ async def create_instance(
         https=actual_https,
         cert_path=cert_path,
         key_path=key_path,
+        nginx_config_path=nginx_config_path,
     )
 
 
@@ -312,6 +356,8 @@ async def run_instances(
     key_path: Optional[str | list[str]] = None,
     sandbox_ids: Optional[list[str]] = None,
     force_https: bool = False,
+    use_nginx: bool = False,
+    nginx_domain: str = "localhost",
 ) -> list[SandboxInstance]:
     """Run multiple VS Code sandbox instances concurrently."""
     config = ConnectionConfig(
@@ -356,6 +402,8 @@ async def run_instances(
                 key_path=instance_key_path,
                 sandbox_id=sandbox_id,
                 force_https=force_https,
+                use_nginx=use_nginx,
+                nginx_domain=nginx_domain,
             )
         )
 
@@ -463,6 +511,18 @@ Examples:
         action="store_true",
         default=False,
         help="Force HTTPS even with EIP (requires certificate matching EIP hostname)",
+    )
+    parser.add_argument(
+        "--use-nginx",
+        action="store_true",
+        default=False,
+        help="Use nginx reverse proxy for sandbox endpoints (generates random subdomain)",
+    )
+    parser.add_argument(
+        "--nginx-domain",
+        type=str,
+        default="localhost",
+        help="Base domain for nginx subdomains (default: localhost)",
     )
 
     args = parser.parse_args()
@@ -574,6 +634,8 @@ Examples:
             cert_path=cert_paths,
             key_path=key_paths,
             force_https=args.force_https,
+            use_nginx=args.use_nginx,
+            nginx_domain=args.nginx_domain,
         )
 
         # Print endpoints for all instances
@@ -586,6 +648,13 @@ Examples:
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
             print(f"    URL: {protocol}://{instance.endpoint}/")
+            # Print nginx URL if using nginx
+            if instance.nginx_config_path:
+                # Extract server name from config path
+                # Format: /etc/nginx/sites-available/sandbox-<server_name>
+                config_filename = Path(instance.nginx_config_path).name
+                server_name = config_filename.replace("sandbox-", "").replace("-", ".")
+                print(f"    Nginx URL: https://{server_name}/")
         print()
 
         # Keep sandboxes alive for the specified timeout
@@ -604,6 +673,24 @@ Examples:
     finally:
         # Clean up all instances
         print("\nCleaning up sandbox instances...")
+
+        # Clean up nginx configurations if --use-nginx was used
+        if args.use_nginx:
+            print("\nCleaning up nginx configurations...")
+            nginx_gen = NginxConfigGenerator()
+            for instance in instances_list:
+                if instance.nginx_config_path:
+                    try:
+                        nginx_gen.delete_config(instance.nginx_config_path)
+                    except Exception as e:
+                        print(f"  Note: Failed to delete nginx config: {e}")
+            # Reload nginx after cleanup
+            try:
+                nginx_gen.reload_nginx()
+            except Exception as e:
+                print(f"  Note: Failed to reload nginx: {e}")
+
+        # Clean up sandbox instances
         for instance in instances_list:
             try:
                 await instance.sandbox.kill()
