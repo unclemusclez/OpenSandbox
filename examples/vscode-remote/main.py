@@ -205,7 +205,9 @@ async def create_instance(
     print(f"[DEBUG] Instance {instance_id}: endpoint.endpoint = {endpoint.endpoint}")
     print(f"[DEBUG] Instance {instance_id}: endpoint_host = {endpoint_host}")
     print(
-        f"[DEBUG] Instance {instance_id}: regex pattern = ^\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}$"
+        r"[DEBUG] Instance {instance_id}: regex pattern = ^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$".format(
+            instance_id=instance_id
+        )
     )
     is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", endpoint_host))
     print(f"[DEBUG] Instance {instance_id}: is_eip = {is_eip}")
@@ -213,18 +215,35 @@ async def create_instance(
         f"[DEBUG] Instance {instance_id}: https = {https}, force_https = {force_https}"
     )
 
-    # Auto-disable HTTPS for EIP unless explicitly forced
+    # When EIP is detected with HTTPS, use server proxy to handle HTTPS properly
     actual_https = https
     if https and is_eip and not force_https:
         print(
             f"[Instance {instance_id}] Notice: Detected EIP usage ({endpoint_host}). "
-            "HTTPS disabled to avoid certificate mismatch."
+            "Using server proxy for HTTPS support."
         )
         print(
-            f"[Instance {instance_id}]          Use --force-https to enable HTTPS with EIP "
-            "(requires matching certificate)."
+            f"[Instance {instance_id}]          Use --force-https to use direct EIP connection "
+            "(requires certificate matching the EIP)."
         )
-        actual_https = False
+        # Re-fetch endpoint with server proxy enabled
+        proxy_config = ConnectionConfig(
+            domain=config.domain,
+            api_key=config.api_key,
+            request_timeout=config.request_timeout,
+            use_server_proxy=True,
+        )
+        # Update sandbox connection config to use proxy
+        sandbox._connection_config = proxy_config
+        endpoint = await sandbox.get_endpoint(port)
+        print(
+            f"[DEBUG] Instance {instance_id}: New endpoint (proxy) = {endpoint.endpoint}"
+        )
+    elif https and is_eip and force_https:
+        print(
+            f"[Instance {instance_id}] Notice: Using direct EIP connection with HTTPS. "
+            "Ensure certificate matches {endpoint_host}."
+        )
     print(f"[DEBUG] Instance {instance_id}: actual_https = {actual_https}")
 
     return SandboxInstance(
