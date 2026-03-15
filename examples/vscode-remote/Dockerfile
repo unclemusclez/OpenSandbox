@@ -21,7 +21,7 @@
 #   - For HTTPS, mount certificates and use: code-server --cert /certs/server.pem --cert-key /certs/server-key.pem
 #   - mkcert certificates can be generated on host and mounted into container
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
