@@ -205,7 +205,7 @@ async def create_instance(
     print(f"[DEBUG] Instance {instance_id}: endpoint.endpoint = {endpoint.endpoint}")
     print(f"[DEBUG] Instance {instance_id}: endpoint_host = {endpoint_host}")
     print(
-        r"[DEBUG] Instance {instance_id}: regex pattern = ^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$".format(
+        r"[DEBUG] Instance {instance_id}: regex pattern = ^\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}$".format(
             instance_id=instance_id
         )
     )
