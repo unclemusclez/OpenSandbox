@@ -80,6 +80,55 @@ async def _print_logs(label: str, execution) -> None:
         print(f"[{label} error] {execution.error.name}: {execution.error.value}")
 
 
+async def _inject_certificate(
+    sandbox: Sandbox,
+    host_cert_path: str,
+    host_key_path: str,
+) -> tuple[str, str]:
+    """
+    Inject certificate and key files into the container filesystem.
+
+    Reads the certificate files from the host and writes them to
+    /tmp/ directory inside the container for code-server to use.
+
+    Args:
+        sandbox: The sandbox instance
+        host_cert_path: Path to certificate file on the host
+        host_key_path: Path to key file on the host
+
+    Returns:
+        Tuple of (container_cert_path, container_key_path)
+    """
+    # Read certificate files from host
+    cert_content = Path(host_cert_path).read_text()
+    key_content = Path(host_key_path).read_text()
+
+    # Write certificate to container
+    container_cert_path = "/tmp/cert.pem"
+    cert_exec = await sandbox.commands.run(
+        f"cat > {container_cert_path} << 'EOF'\n{cert_content}\nEOF",
+        opts=RunCommandOpts(background=False),
+    )
+    await _print_logs("inject-cert", cert_exec)
+
+    # Write key to container
+    container_key_path = "/tmp/key.pem"
+    key_exec = await sandbox.commands.run(
+        f"cat > {container_key_path} << 'EOF'\n{key_content}\nEOF",
+        opts=RunCommandOpts(background=False),
+    )
+    await _print_logs("inject-key", key_exec)
+
+    # Set proper permissions on key file
+    chmod_exec = await sandbox.commands.run(
+        f"chmod 600 {container_key_path}",
+        opts=RunCommandOpts(background=False),
+    )
+    await _print_logs("chmod-key", chmod_exec)
+
+    return container_cert_path, container_key_path
+
+
 async def create_instance(
     instance_id: int,
     workspace: str,
@@ -110,9 +159,20 @@ async def create_instance(
     workspace_path = f"/workspace/{workspace}"
 
     if https:
-        # HTTPS mode with certificate
-        cert_flag = f"--cert {cert_path}" if cert_path else ""
-        key_flag = f"--cert-key {key_path}" if key_path else ""
+        # HTTPS mode - inject certificates into container first
+        if cert_path and key_path:
+            print(f"[Instance {instance_id}] Injecting certificates into container...")
+            container_cert_path, container_key_path = await _inject_certificate(
+                sandbox, cert_path, key_path
+            )
+            print(f"[Instance {instance_id}] Certificates injected successfully")
+        else:
+            raise ValueError(
+                f"HTTPS enabled but no certificates provided for instance {instance_id}"
+            )
+
+        cert_flag = f"--cert {container_cert_path}"
+        key_flag = f"--cert-key {container_key_path}"
         code_server_cmd = (
             f"code-server {cert_flag} {key_flag} "
             f"--bind-addr 0.0.0.0:{port} "
@@ -160,8 +220,8 @@ async def run_instances(
     image: str,
     python_version: str,
     https: bool = False,
-    cert_path: Optional[str] = None,
-    key_path: Optional[str] = None,
+    cert_path: Optional[str | list[str]] = None,
+    key_path: Optional[str | list[str]] = None,
     sandbox_ids: Optional[list[str]] = None,
 ) -> list[SandboxInstance]:
     """Run multiple VS Code sandbox instances concurrently."""
@@ -177,6 +237,21 @@ async def run_instances(
         sandbox_id = (
             f"vscode-{start_port + i}" if sandbox_ids is None else sandbox_ids[i]
         )
+
+        # Determine certificate paths for this instance
+        instance_cert_path = None
+        instance_key_path = None
+        if https:
+            if isinstance(cert_path, list):
+                instance_cert_path = cert_path[i] if i < len(cert_path) else None
+            else:
+                instance_cert_path = cert_path
+
+            if isinstance(key_path, list):
+                instance_key_path = key_path[i] if i < len(key_path) else None
+            else:
+                instance_key_path = key_path
+
         tasks.append(
             create_instance(
                 instance_id=i,
@@ -187,8 +262,8 @@ async def run_instances(
                 python_version=python_version,
                 timeout=sandbox_timeout,
                 https=https,
-                cert_path=cert_path,
-                key_path=key_path,
+                cert_path=instance_cert_path,
+                key_path=instance_key_path,
                 sandbox_id=sandbox_id,
             )
         )

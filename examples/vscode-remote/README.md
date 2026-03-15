@@ -31,9 +31,18 @@ The OpenSandbox server acts as a proxy that can terminate SSL at the edge. This 
 
 > **Important**: If your OpenSandbox server is not configured with SSL, use `http://` URLs. The `SSL_ERROR_RX_RECORD_TOO_LONG` error occurs when trying to access an HTTP endpoint with HTTPS.
 
-### Mode 2: mkcert Local Development HTTPS
+### Mode 2: Container HTTPS with mkcert (Local Development)
 
 For local development, you can run code-server directly over HTTPS using mkcert-generated certificates. This is useful for testing VS Code extensions that require HTTPS.
+
+#### How Container HTTPS Works
+
+1. **mkcert** creates a local CA and generates certificates trusted by your browser
+2. **Certificates are injected** into each container's filesystem at `/tmp/cert.pem` and `/tmp/key.pem`
+3. **code-server** runs inside the sandbox with `--cert /tmp/cert.pem` and `--cert-key /tmp/key.pem` flags
+4. **Browser** trusts the mkcert CA (after installing it once)
+
+> **Note**: This mode is only useful for local development. The mkcert CA must be installed on your machine for browsers to trust the certificates.
 
 #### Quick Start with mkcert
 
@@ -49,7 +58,7 @@ mkcert --install
 # Generate wildcard certificate (*.localhost)
 uv run python examples/vscode-remote/generate-certs.py
 
-# Run VS Code instances with HTTPS
+# Run VS Code instances with HTTPS (certificates are automatically injected into containers)
 uv run python examples/vscode-remote/main.py --instances 3 --https \
   --cert ./certs/localhost.pem --key ./certs/localhost-key.pem
 ```
@@ -70,13 +79,16 @@ uv run python examples/vscode-remote/main.py --instances 3 --https \
   --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
 ```
 
-#### How mkcert HTTPS Works
+#### Certificate Injection Process
 
-1. **mkcert** creates a local CA and generates certificates trusted by your browser
-2. **code-server** runs inside the sandbox with `--cert` and `--cert-key` flags
-3. **Browser** trusts the mkcert CA (after installing it once)
+When HTTPS is enabled, the main.py script automatically:
 
-> **Note**: This mode is only useful for local development. The mkcert CA must be installed on your machine for browsers to trust the certificates.
+1. Reads the certificate and key files from the host filesystem
+2. Injects them into each container's `/tmp/` directory
+3. Sets proper permissions on the key file (`chmod 600`)
+4. Configures code-server to use the injected certificates
+
+This process happens automatically for each container, ensuring that each sandbox instance has its own copy of the certificates.
 
 #### Security Considerations
 
@@ -84,6 +96,7 @@ uv run python examples/vscode-remote/main.py --instances 3 --https \
 - **Not for production**: Do not use mkcert in production environments
 - **Install CA once**: Run `mkcert --install` once to install the local CA
 - **Certificate expiration**: mkcert certificates expire after 1-2 years; regenerate as needed
+- **Container isolation**: Each container receives its own copy of certificates, preventing cross-container access
 
 ## External Access Configuration
 
@@ -338,6 +351,13 @@ Starting 3 VS Code sandbox instance(s)...
   HTTPS: Yes
   Certificate: ./certs/localhost.pem (wildcard)
 
+[Instance 0] Injecting certificates into container...
+[Instance 0] Certificates injected successfully
+[Instance 1] Injecting certificates into container...
+[Instance 1] Certificates injected successfully
+[Instance 2] Injecting certificates into container...
+[Instance 2] Certificates injected successfully
+
 ============================================================
 VS Code Web Endpoints (HTTPS - mkcert local CA)
 ============================================================
@@ -360,7 +380,11 @@ VS Code Web Endpoints (HTTPS - mkcert local CA)
 Keeping sandboxes alive for 10 minutes. Press Ctrl+C to exit sooner.
 ```
 
-> **Troubleshooting SSL Error**: If you see `SSL_ERROR_RX_RECORD_TOO_LONG` in your browser, it means you're trying to access an HTTP endpoint with HTTPS. The code-server instances run over plain HTTP internally. Use `http://` URLs for local development unless your OpenSandbox server is configured with SSL certificates.
+> **Troubleshooting SSL Errors**:
+> - **`SSL_ERROR_RX_RECORD_TOO_LONG`**: You're trying to access an HTTP endpoint with HTTPS. Use `http://` URLs for HTTP mode, or ensure you've enabled HTTPS with the `--https` flag and proper certificates.
+> - **`ERR_CERT_AUTHORITY_INVALID`**: The mkcert CA is not installed on your machine. Run `mkcert --install` to install the local CA.
+> - **Certificate not found**: Ensure the certificate and key files exist at the paths specified with `--cert` and `--key` flags.
+> - **Container certificate injection failed**: Check that the sandbox has write permissions to `/tmp/` directory.
 
 ## Use Cases
 
@@ -463,22 +487,33 @@ When running multiple instances, consider:
 
 ## Certificate Generation Script
 
-The `generate-certs.py` script helps you generate mkcert certificates for local development:
+The `generate-certs.py` script helps you generate mkcert certificates for local development. These certificates are automatically injected into containers when HTTPS mode is enabled.
 
 ```shell
 # Install mkcert CA
 uv run python examples/vscode-remote/generate-certs.py --install-ca
 
-# Generate wildcard certificate (*.localhost)
+# Generate wildcard certificate (*.localhost) - recommended for most use cases
 uv run python examples/vscode-remote/generate-certs.py
 
-# Generate per-sandbox certificates
+# Generate per-sandbox certificates (for more granular control)
 uv run python examples/vscode-remote/generate-certs.py --per-sandbox \
   --sandbox vscode-8443 --sandbox vscode-8444 --sandbox vscode-8445
 
 # Generate certificates for specific sandbox IDs
 uv run python examples/vscode-remote/generate-certs.py --sandbox my-sandbox
 ```
+
+### Certificate File Locations
+
+Certificates are stored in the `certs/` directory by default:
+
+- `localhost.pem` - Wildcard certificate for `*.localhost`
+- `localhost-key.pem` - Private key for wildcard certificate
+- `{sandbox_id}.pem` - Per-sandbox certificate
+- `{sandbox_id}-key.pem` - Per-sandbox private key
+
+When running with HTTPS enabled, these certificates are automatically injected into each container's `/tmp/` directory and used by code-server.
 
 ## References
 
