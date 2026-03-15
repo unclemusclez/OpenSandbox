@@ -37,6 +37,7 @@ Features:
 import argparse
 import asyncio
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
@@ -376,6 +377,21 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # Detect if domain is an IP address (EIP)
+    domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
+    domain_host = domain.split(":")[0]
+    is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", domain_host))
+
+    # Auto-disable HTTPS for EIP unless explicitly forced
+    if args.https and is_eip and not args.force_https:
+        print(
+            f"Notice: Detected EIP usage ({domain_host}). HTTPS disabled to avoid certificate mismatch."
+        )
+        print(
+            "       Use --force-https to enable HTTPS with EIP (requires matching certificate)."
+        )
+        args.https = False
 
     # Validate HTTPS arguments
     if args.https:
