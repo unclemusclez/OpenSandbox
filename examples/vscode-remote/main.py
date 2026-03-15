@@ -37,7 +37,9 @@ Features:
 import argparse
 import asyncio
 import os
+import random
 import re
+import string
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
@@ -53,6 +55,20 @@ from nginx_config import NginxConfigGenerator
 from ssl_cert import SSLCertificateGenerator
 
 
+def _generate_random_string(length: int = 8) -> str:
+    """
+    Generate a random alphanumeric string.
+
+    Args:
+        length: Length of the random string (default: 8)
+
+    Returns:
+        Random alphanumeric string
+    """
+    characters = string.ascii_lowercase + string.digits
+    return "".join(random.choice(characters) for _ in range(length))
+
+
 @dataclass
 class SandboxInstance:
     """Represents a single VS Code sandbox instance."""
@@ -66,6 +82,7 @@ class SandboxInstance:
     cert_path: Optional[str] = None
     key_path: Optional[str] = None
     nginx_config_path: Optional[str] = None  # Path to nginx configuration file
+    random_string: Optional[str] = None  # Random string for URL path
 
 
 def _required_env(name: str) -> str:
@@ -293,6 +310,9 @@ async def create_instance(
     actual_https = https
     print(f"[DEBUG] Instance {instance_id}: actual_https = {actual_https}")
 
+    # Generate random string for URL path
+    random_string = _generate_random_string(length=8)
+
     # Generate nginx configuration if requested
     nginx_config_path = None
     if use_nginx:
@@ -311,7 +331,7 @@ async def create_instance(
             server_name=server_name,
         )
 
-        # Generate nginx configuration
+        # Generate nginx configuration with random string path
         nginx_config_path = nginx_gen.generate_config(
             server_name=server_name,
             upstream_host="127.0.0.1",
@@ -319,6 +339,7 @@ async def create_instance(
             use_https=True,
             cert_path=cert_path_nginx,
             key_path=key_path_nginx,
+            random_string=random_string,
         )
 
         # Enable configuration
@@ -327,7 +348,9 @@ async def create_instance(
         # Reload nginx
         nginx_gen.reload_nginx()
 
-        print(f"[Nginx] Configuration enabled for: https://{server_name}/")
+        print(
+            f"[Nginx] Configuration enabled for: https://{server_name}/{random_string}/"
+        )
 
     return SandboxInstance(
         instance_id=instance_id,
@@ -339,6 +362,7 @@ async def create_instance(
         cert_path=cert_path,
         key_path=key_path,
         nginx_config_path=nginx_config_path,
+        random_string=random_string,
     )
 
 
@@ -647,14 +671,27 @@ Examples:
             print(f"\n  Instance {instance.instance_id + 1}:")
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
-            print(f"    URL: {protocol}://{instance.endpoint}/")
+            # Use random string in URL if available
+            if instance.random_string:
+                # Extract host from endpoint (remove port if present)
+                endpoint_host = instance.endpoint.split(":")[0]
+                print(
+                    f"    URL: {protocol}://{endpoint_host}/{instance.random_string}/"
+                )
+            else:
+                print(f"    URL: {protocol}://{instance.endpoint}/")
             # Print nginx URL if using nginx
             if instance.nginx_config_path:
                 # Extract server name from config path
                 # Format: /etc/nginx/sites-available/sandbox-<server_name>
                 config_filename = Path(instance.nginx_config_path).name
                 server_name = config_filename.replace("sandbox-", "").replace("-", ".")
-                print(f"    Nginx URL: https://{server_name}/")
+                if instance.random_string:
+                    print(
+                        f"    Nginx URL: https://{server_name}/{instance.random_string}/"
+                    )
+                else:
+                    print(f"    Nginx URL: https://{server_name}/")
         print()
 
         # Keep sandboxes alive for the specified timeout

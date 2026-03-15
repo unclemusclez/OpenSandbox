@@ -59,7 +59,7 @@ class NginxConfigGenerator:
     listen 80;
     server_name {server_name};
 
-    location / {{
+    location {location_path} {{
         proxy_pass http://{upstream_host}:{upstream_port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -82,7 +82,7 @@ class NginxConfigGenerator:
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    location / {{
+    location {location_path} {{
         proxy_pass http://{upstream_host}:{upstream_port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -128,6 +128,7 @@ class NginxConfigGenerator:
         use_https: bool = False,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
+        random_string: Optional[str] = None,
     ) -> str:
         """
         Generate nginx configuration file.
@@ -139,6 +140,7 @@ class NginxConfigGenerator:
             use_https: Whether to use HTTPS
             cert_path: Path to SSL certificate (required if use_https)
             key_path: Path to SSL key (required if use_https)
+            random_string: Random string for URL path (e.g., "x7gx9sjd")
 
         Returns:
             Path to generated configuration file
@@ -162,6 +164,9 @@ class NginxConfigGenerator:
         # Select template
         template = self.HTTPS_TEMPLATE if use_https else self.HTTP_TEMPLATE
 
+        # Determine location path
+        location_path = f"/{random_string}/" if random_string else "/"
+
         # Generate configuration content
         config_content = template.format(
             server_name=server_name,
@@ -169,6 +174,7 @@ class NginxConfigGenerator:
             upstream_port=upstream_port,
             cert_path=cert_path or "",
             key_path=key_path or "",
+            location_path=location_path,
         )
 
         # Write configuration file
@@ -359,6 +365,12 @@ def main():
         help="Path to SSL key (required with --https)",
     )
     parser.add_argument(
+        "--random-string",
+        type=str,
+        default=None,
+        help="Random string for URL path (e.g., 'x7gx9sjd')",
+    )
+    parser.add_argument(
         "--enable",
         action="store_true",
         help="Enable configuration after generation",
@@ -397,6 +409,7 @@ def main():
         use_https=args.https,
         cert_path=args.cert_path,
         key_path=args.key_path,
+        random_string=args.random_string,
     )
 
     # Enable configuration if requested
