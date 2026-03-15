@@ -198,6 +198,11 @@ async def create_instance(
     await _print_logs(f"code-server-{instance_id}", start_exec)
 
     # Get the endpoint for this instance
+    print(f"[DEBUG] Instance {instance_id}: Getting endpoint for port {port}")
+    print(f"[DEBUG] Instance {instance_id}: connection_config.domain={config.domain}")
+    print(
+        f"[DEBUG] Instance {instance_id}: connection_config.use_server_proxy={config.use_server_proxy}"
+    )
     endpoint = await sandbox.get_endpoint(port)
 
     # Check if the endpoint host is an IP address (EIP)
@@ -227,14 +232,26 @@ async def create_instance(
             "(requires certificate matching the EIP)."
         )
         # Re-fetch endpoint with server proxy enabled
+        print(
+            f"[DEBUG] Instance {instance_id}: Creating proxy_config with use_server_proxy=True"
+        )
         proxy_config = ConnectionConfig(
             domain=config.domain,
             api_key=config.api_key,
             request_timeout=config.request_timeout,
             use_server_proxy=True,
         )
+        print(
+            f"[DEBUG] Instance {instance_id}: proxy_config.domain={proxy_config.domain}"
+        )
+        print(
+            f"[DEBUG] Instance {instance_id}: proxy_config.use_server_proxy={proxy_config.use_server_proxy}"
+        )
         # Update sandbox connection config to use proxy
         sandbox._connection_config = proxy_config
+        print(
+            f"[DEBUG] Instance {instance_id}: Updated sandbox._connection_config.use_server_proxy={sandbox._connection_config.use_server_proxy}"
+        )
         endpoint = await sandbox.get_endpoint(port)
         print(
             f"[DEBUG] Instance {instance_id}: New endpoint (proxy) = {endpoint.endpoint}"

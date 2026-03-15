@@ -413,6 +413,9 @@ async def get_sandbox_endpoint(
 
     logger = logging.getLogger(__name__)
 
+    logger.info(f"[EIP DEBUG] Original endpoint from service={endpoint.endpoint}")
+    logger.info(f"[EIP DEBUG] use_server_proxy={use_server_proxy}")
+
     if use_server_proxy:
         # Construct proxy URL
         # Use EIP from config if set, otherwise use the request's base_url
@@ -435,12 +438,18 @@ async def get_sandbox_endpoint(
             )
             logger.info(f"[EIP DEBUG] Final endpoint (EIP branch)={endpoint.endpoint}")
         else:
-            base_url = str(request.base_url).rstrip("/")
-            base_url = base_url.replace("https://", "").replace("http://", "")
-            logger.info(f"[EIP DEBUG] Using base_url branch, base_url={base_url}")
-            endpoint.endpoint = f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"
+            # Extract host from the original endpoint to preserve the EIP
+            # This ensures the proxy URL uses the same host as the direct endpoint
+            original_host = endpoint.endpoint.split(":")[0]
+            proxy_port = request.url.port or 8080
             logger.info(
-                f"[EIP DEBUG] Final endpoint (base_url branch)={endpoint.endpoint}"
+                f"[EIP DEBUG] Using original endpoint host, original_host={original_host}, proxy_port={proxy_port}"
+            )
+            endpoint.endpoint = (
+                f"{original_host}:{proxy_port}/sandboxes/{sandbox_id}/proxy/{port}"
+            )
+            logger.info(
+                f"[EIP DEBUG] Final endpoint (original host branch)={endpoint.endpoint}"
             )
     else:
         logger.info(f"[EIP DEBUG] use_server_proxy={use_server_proxy}, not using proxy")
