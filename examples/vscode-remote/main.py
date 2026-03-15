@@ -155,49 +155,8 @@ async def create_instance(
         timeout=timeout,
     )
 
-    # Build code-server command
-    # HTTPS mode: use --cert and --cert-key flags
-    # HTTP mode: plain HTTP (default)
-    workspace_path = f"/workspace/{workspace}"
-
-    if https:
-        # HTTPS mode - inject certificates into container first
-        if cert_path and key_path:
-            print(f"[Instance {instance_id}] Injecting certificates into container...")
-            container_cert_path, container_key_path = await _inject_certificate(
-                sandbox, cert_path, key_path
-            )
-            print(f"[Instance {instance_id}] Certificates injected successfully")
-        else:
-            raise ValueError(
-                f"HTTPS enabled but no certificates provided for instance {instance_id}"
-            )
-
-        cert_flag = f"--cert {container_cert_path}"
-        key_flag = f"--cert-key {container_key_path}"
-        code_server_cmd = (
-            f"code-server {cert_flag} {key_flag} "
-            f"--bind-addr 0.0.0.0:{port} "
-            f"--auth none "
-            f"--disable-telemetry "
-            f"{workspace_path}"
-        )
-    else:
-        # HTTP mode (default)
-        code_server_cmd = (
-            f"code-server --bind-addr 0.0.0.0:{port} "
-            f"--auth none "
-            f"--disable-telemetry "
-            f"{workspace_path}"
-        )
-
-    start_exec = await sandbox.commands.run(
-        code_server_cmd,
-        opts=RunCommandOpts(background=True),
-    )
-    await _print_logs(f"code-server-{instance_id}", start_exec)
-
-    # Get the endpoint for this instance
+    # Get the endpoint for this instance BEFORE starting code-server
+    # This allows us to determine if proxy mode will be used
     print(f"[DEBUG] Instance {instance_id}: Getting endpoint for port {port}")
     print(f"[DEBUG] Instance {instance_id}: connection_config.domain={config.domain}")
     print(
@@ -220,9 +179,10 @@ async def create_instance(
         f"[DEBUG] Instance {instance_id}: https = {https}, force_https = {force_https}"
     )
 
-    # When EIP is detected with HTTPS, use server proxy to handle HTTPS properly
-    actual_https = https
+    # Determine if we will use proxy mode
+    use_proxy = False
     if https and is_eip and not force_https:
+        use_proxy = True
         print(
             f"[Instance {instance_id}] Notice: Detected EIP usage ({endpoint_host}). "
             "Using server proxy for HTTPS support."
@@ -231,7 +191,7 @@ async def create_instance(
             f"[Instance {instance_id}]          Use --force-https to use direct EIP connection "
             "(requires certificate matching the EIP)."
         )
-        # Re-fetch endpoint with server proxy enabled
+        # Update sandbox connection config to use proxy
         print(
             f"[DEBUG] Instance {instance_id}: Creating proxy_config with use_server_proxy=True"
         )
@@ -247,7 +207,6 @@ async def create_instance(
         print(
             f"[DEBUG] Instance {instance_id}: proxy_config.use_server_proxy={proxy_config.use_server_proxy}"
         )
-        # Update sandbox connection config to use proxy
         sandbox._connection_config = proxy_config
         print(
             f"[DEBUG] Instance {instance_id}: Updated sandbox._connection_config.use_server_proxy={sandbox._connection_config.use_server_proxy}"
@@ -261,6 +220,70 @@ async def create_instance(
             f"[Instance {instance_id}] Notice: Using direct EIP connection with HTTPS. "
             "Ensure certificate matches {endpoint_host}."
         )
+
+    # Build code-server command
+    # IMPORTANT: When using proxy mode, code-server must use HTTP (not HTTPS)
+    # because the proxy connects to the sandbox via HTTP internally.
+    # HTTPS is handled from client to proxy, not from proxy to sandbox.
+    workspace_path = f"/workspace/{workspace}"
+
+    # Determine if code-server should use HTTPS or HTTP
+    # When use_proxy=True, always use HTTP for code-server
+    # When use_proxy=False, use HTTPS if https flag is set
+    use_https_for_code_server = https and not use_proxy
+
+    if use_https_for_code_server:
+        # HTTPS mode - inject certificates into container first
+        if cert_path and key_path:
+            print(f"[Instance {instance_id}] Injecting certificates into container...")
+            container_cert_path, container_key_path = await _inject_certificate(
+                sandbox, cert_path, key_path
+            )
+            print(f"[Instance {instance_id}] Certificates injected successfully")
+        else:
+            raise ValueError(
+                f"HTTPS enabled but no certificates provided for instance {instance_id}"
+            )
+
+        cert_flag = f"--cert {container_cert_path}"
+        key_flag = f"--cert-key {container_key_path}"
+        code_server_cmd = (
+            f"code-server {cert_flag} {key_flag} "
+            f"--bind-addr 0.0.0.0:{port} "
+            f"--auth none "
+            f"--disable-telemetry "
+            f"{workspace_path}"
+        )
+        print(
+            f"[Instance {instance_id}] Starting code-server with HTTPS on port {port}"
+        )
+    else:
+        # HTTP mode (default or when using proxy)
+        code_server_cmd = (
+            f"code-server --bind-addr 0.0.0.0:{port} "
+            f"--auth none "
+            f"--disable-telemetry "
+            f"{workspace_path}"
+        )
+        if use_proxy:
+            print(
+                f"[Instance {instance_id}] Starting code-server with HTTP on port {port} (proxy mode)"
+            )
+        else:
+            print(
+                f"[Instance {instance_id}] Starting code-server with HTTP on port {port}"
+            )
+
+    start_exec = await sandbox.commands.run(
+        code_server_cmd,
+        opts=RunCommandOpts(background=True),
+    )
+    await _print_logs(f"code-server-{instance_id}", start_exec)
+
+    # The actual_https flag indicates what the client sees
+    # When using proxy, the client sees HTTPS (proxy handles SSL)
+    # but code-server runs with HTTP internally
+    actual_https = https
     print(f"[DEBUG] Instance {instance_id}: actual_https = {actual_https}")
 
     return SandboxInstance(
