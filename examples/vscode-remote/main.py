@@ -229,6 +229,7 @@ async def run_instances(
         domain=domain,
         api_key=api_key,
         request_timeout=timedelta(seconds=60),
+        use_server_proxy=True,  # Add this line
     )
 
     # Create all instances concurrently
