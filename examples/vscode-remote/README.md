@@ -60,7 +60,7 @@ uv run python examples/vscode-remote/generate-certs.py
 
 # Run VS Code instances with HTTPS (certificates are automatically injected into containers)
 uv run python examples/vscode-remote/main.py --instances 3 --https \
-  --cert ./certs/localhost.pem --key ./certs/localhost-key.pem
+  --cert examples/vscode-remote/certs/localhost.pem --key examples/vscode-remote/certs/localhost-key.pem
 ```
 
 #### Per-Sandbox Certificates

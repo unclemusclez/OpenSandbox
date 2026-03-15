@@ -411,9 +411,18 @@ async def get_sandbox_endpoint(
 
     if use_server_proxy:
         # Construct proxy URL
-        base_url = str(request.base_url).rstrip("/")
-        base_url = base_url.replace("https://", "").replace("http://", "")
-        endpoint.endpoint = f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"
+        # Use EIP from config if set, otherwise use the request's base_url
+        eip = (sandbox_service.app_config.server.eip or "").strip()
+        if eip:
+            # Extract port from request.base_url for the proxy server port
+            proxy_port = request.url.port or 8080
+            endpoint.endpoint = (
+                f"{eip}:{proxy_port}/sandboxes/{sandbox_id}/proxy/{port}"
+            )
+        else:
+            base_url = str(request.base_url).rstrip("/")
+            base_url = base_url.replace("https://", "").replace("http://", "")
+            endpoint.endpoint = f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"
 
     return endpoint
 
