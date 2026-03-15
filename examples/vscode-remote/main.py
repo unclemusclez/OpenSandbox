@@ -202,7 +202,16 @@ async def create_instance(
 
     # Check if the endpoint host is an IP address (EIP)
     endpoint_host = endpoint.endpoint.split(":")[0]
+    print(f"[DEBUG] Instance {instance_id}: endpoint.endpoint = {endpoint.endpoint}")
+    print(f"[DEBUG] Instance {instance_id}: endpoint_host = {endpoint_host}")
+    print(
+        f"[DEBUG] Instance {instance_id}: regex pattern = ^\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}\.\d{{1,3}}$"
+    )
     is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", endpoint_host))
+    print(f"[DEBUG] Instance {instance_id}: is_eip = {is_eip}")
+    print(
+        f"[DEBUG] Instance {instance_id}: https = {https}, force_https = {force_https}"
+    )
 
     # Auto-disable HTTPS for EIP unless explicitly forced
     actual_https = https
@@ -216,6 +225,7 @@ async def create_instance(
             "(requires matching certificate)."
         )
         actual_https = False
+    print(f"[DEBUG] Instance {instance_id}: actual_https = {actual_https}")
 
     return SandboxInstance(
         instance_id=instance_id,
