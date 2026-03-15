@@ -142,6 +142,7 @@ async def create_instance(
     cert_path: Optional[str] = None,
     key_path: Optional[str] = None,
     sandbox_id: Optional[str] = None,
+    force_https: bool = False,
 ) -> SandboxInstance:
     """Create a single VS Code sandbox instance."""
     # Inject Python version into container environment
@@ -199,13 +200,30 @@ async def create_instance(
     # Get the endpoint for this instance
     endpoint = await sandbox.get_endpoint(port)
 
+    # Check if the endpoint host is an IP address (EIP)
+    endpoint_host = endpoint.endpoint.split(":")[0]
+    is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", endpoint_host))
+
+    # Auto-disable HTTPS for EIP unless explicitly forced
+    actual_https = https
+    if https and is_eip and not force_https:
+        print(
+            f"[Instance {instance_id}] Notice: Detected EIP usage ({endpoint_host}). "
+            "HTTPS disabled to avoid certificate mismatch."
+        )
+        print(
+            f"[Instance {instance_id}]          Use --force-https to enable HTTPS with EIP "
+            "(requires matching certificate)."
+        )
+        actual_https = False
+
     return SandboxInstance(
         instance_id=instance_id,
         workspace=workspace,
         port=port,
         sandbox=sandbox,
         endpoint=endpoint.endpoint,
-        https=https,
+        https=actual_https,
         cert_path=cert_path,
         key_path=key_path,
     )
@@ -224,6 +242,7 @@ async def run_instances(
     cert_path: Optional[str | list[str]] = None,
     key_path: Optional[str | list[str]] = None,
     sandbox_ids: Optional[list[str]] = None,
+    force_https: bool = False,
 ) -> list[SandboxInstance]:
     """Run multiple VS Code sandbox instances concurrently."""
     config = ConnectionConfig(
@@ -267,6 +286,7 @@ async def run_instances(
                 cert_path=instance_cert_path,
                 key_path=instance_key_path,
                 sandbox_id=sandbox_id,
+                force_https=force_https,
             )
         )
 
@@ -378,21 +398,6 @@ Examples:
 
     args = parser.parse_args()
 
-    # Detect if domain is an IP address (EIP)
-    domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
-    domain_host = domain.split(":")[0]
-    is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", domain_host))
-
-    # Auto-disable HTTPS for EIP unless explicitly forced
-    if args.https and is_eip and not args.force_https:
-        print(
-            f"Notice: Detected EIP usage ({domain_host}). HTTPS disabled to avoid certificate mismatch."
-        )
-        print(
-            "       Use --force-https to enable HTTPS with EIP (requires matching certificate)."
-        )
-        args.https = False
-
     # Validate HTTPS arguments
     if args.https:
         if not args.cert or not args.key:
@@ -499,17 +504,15 @@ Examples:
             https=args.https,
             cert_path=cert_paths,
             key_path=key_paths,
+            force_https=args.force_https,
         )
 
         # Print endpoints for all instances
-        protocol = "https" if args.https else "http"
         print("\n" + "=" * 60)
-        print(
-            f"VS Code Web Endpoints ({protocol.upper()} - "
-            f"{'mkcert local CA' if args.https else 'HTTP'})"
-        )
+        print("VS Code Web Endpoints")
         print("=" * 60)
         for instance in instances_list:
+            protocol = "https" if instance.https else "http"
             print(f"\n  Instance {instance.instance_id + 1}:")
             print(f"    Workspace: {instance.workspace}")
             print(f"    Port: {instance.port}")
