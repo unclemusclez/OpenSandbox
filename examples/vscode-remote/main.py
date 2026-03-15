@@ -368,6 +368,12 @@ Examples:
         default="3.11",
         help="Python version for the sandbox (default: 3.11)",
     )
+    parser.add_argument(
+        "--force-https",
+        action="store_true",
+        default=False,
+        help="Force HTTPS even with EIP (requires certificate matching EIP hostname)",
+    )
 
     args = parser.parse_args()
 
