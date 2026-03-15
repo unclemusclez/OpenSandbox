@@ -133,6 +133,112 @@ ssh -L 8445:localhost:42981 user@opensandbox-server
 
 Then access via `http://localhost:8443/`, `http://localhost:8444/`, etc.
 
+### Mode 3: Nginx Reverse Proxy (New)
+
+For development and testing, use nginx reverse proxy with automatic SSL certificate generation:
+
+#### How Nginx Reverse Proxy Works
+
+1. **Random Subdomain Generation**: Generates a random subdomain (e.g., `abc12345.localhost`)
+2. **SSL Certificate Generation**: Creates self-signed SSL certificate for the subdomain
+3. **Nginx Configuration**: Generates nginx config file in `/etc/nginx/sites-available/`
+4. **Enable Site**: Creates symlink to `/etc/nginx/sites-enabled/`
+5. **Reload Nginx**: Reloads nginx to apply configuration
+6. **Access**: Users access via `https://<random-subdomain>.localhost/`
+
+#### Advantages
+
+- **Automatic SSL**: No need to manually generate certificates
+- **Unique URLs**: Each sandbox gets a unique subdomain
+- **WebSocket Support**: Full WebSocket support through nginx
+- **Production Ready**: Can be extended to use Let's Encrypt for production
+
+#### Prerequisites
+
+```bash
+# Install nginx
+sudo apt-get install nginx
+
+# Create directories
+sudo mkdir -p /etc/nginx/sites-available
+sudo mkdir -p /etc/nginx/sites-enabled
+sudo mkdir -p /etc/nginx/ssl
+
+# Set permissions
+sudo chown -R $USER:$USER /etc/nginx/sites-available
+sudo chown -R $USER:$USER /etc/nginx/sites-enabled
+sudo chown -R $USER:$USER /etc/nginx/ssl
+
+# Install cryptography library
+pip install cryptography
+```
+
+#### Quick Start with Nginx
+
+```shell
+# Run single instance with nginx proxy
+uv run python examples/vscode-remote/main.py \
+    --instances 1 \
+    --use-nginx \
+    --nginx-domain localhost \
+    --workspace test
+
+# Run multiple instances with nginx proxy
+uv run python examples/vscode-remote/main.py \
+    --instances 3 \
+    --use-nginx \
+    --nginx-domain localhost \
+    --workspace test
+```
+
+#### Example Output
+
+```
+Starting 1 VS Code sandbox instance(s)...
+  Domain: localhost:8080
+  Image: opensandbox/vscode:latest
+  Workspace: test
+  Port range: 8443 - 8443
+  Timeout: 10 minutes
+  Nginx: Yes
+
+[Instance 0] Injecting certificates into container...
+[Instance 0] Certificates injected successfully
+[Nginx] Generating configuration for instance 0...
+[SSL] Generated subdomain: abc12345.localhost
+[SSL] Certificate saved: /etc/nginx/ssl/abc12345.localhost.crt
+[SSL] Key saved: /etc/nginx/ssl/abc12345.localhost.key
+[Nginx] Configuration created: /etc/nginx/sites-available/sandbox-abc12345.localhost
+[Nginx] Configuration enabled: /etc/nginx/sites-enabled/sandbox-abc12345.localhost
+[Nginx] Reloaded successfully
+[Nginx] Configuration enabled for: https://abc12345.localhost/
+[Instance 0] Starting code-server with HTTP on port 8443 (proxy mode)
+
+============================================================
+VS Code Web Endpoints
+============================================================
+
+  Instance 1:
+    Workspace: test
+    Port: 8443
+    URL: http://127.0.0.1:43876/proxy/8443/
+    Nginx URL: https://abc12345.localhost/
+```
+
+#### Security Considerations
+
+- **Self-Signed Certificates**: Certificates are self-signed and will show browser warnings
+- **Local Development Only**: This mode is intended for development and testing
+- **Production**: For production, use Let's Encrypt with nginx
+- **Certificate Expiration**: Self-signed certificates expire after 1 year by default
+
+#### Cleanup
+
+When you stop the script (Ctrl+C), nginx configurations are automatically cleaned up:
+- Nginx configuration files are deleted from `/etc/nginx/sites-available/`
+- Symlinks are removed from `/etc/nginx/sites-enabled/`
+- Nginx is reloaded to apply changes
+
 ### Option 3: Reverse Proxy with Public IPs
 
 Configure a reverse proxy (nginx, Traefik) to expose sandbox ports:
@@ -322,6 +428,8 @@ uv run python examples/vscode-remote/main.py \
 | `--https` | Use HTTPS (requires --cert and --key flags) | `false` |
 | `--cert` | Certificate file path (can be specified multiple times) | (none) |
 | `--key` | Certificate key file path (can be specified multiple times) | (none) |
+| `--use-nginx` | Use nginx reverse proxy with automatic SSL | `false` |
+| `--nginx-domain` | Base domain for nginx subdomains | `localhost` |
 
 ### HTTPS Usage
 
@@ -337,6 +445,26 @@ uv run python examples/vscode-remote/main.py --instances 3 --https \
   --cert ./certs/vscode-8443.pem --key ./certs/vscode-8443-key.pem \
   --cert ./certs/vscode-8444.pem --key ./certs/vscode-8444-key.pem \
   --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
+```
+
+### Nginx Reverse Proxy Usage
+
+Use the `--use-nginx` flag to enable automatic nginx reverse proxy with SSL:
+
+```shell
+# Run single instance with nginx proxy
+uv run python examples/vscode-remote/main.py \
+    --instances 1 \
+    --use-nginx \
+    --nginx-domain localhost \
+    --workspace test
+
+# Run multiple instances with nginx proxy
+uv run python examples/vscode-remote/main.py \
+    --instances 3 \
+    --use-nginx \
+    --nginx-domain localhost \
+    --workspace test
 ```
 
 ### Example Output
