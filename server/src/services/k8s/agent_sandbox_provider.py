@@ -128,7 +128,7 @@ class AgentSandboxProvider(WorkloadProvider):
         env: Dict[str, str],
         resource_limits: Dict[str, str],
         labels: Dict[str, str],
-        expires_at: datetime,
+        expires_at: Optional[datetime],
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
         network_policy: Optional[NetworkPolicy] = None,
@@ -161,7 +161,16 @@ class AgentSandboxProvider(WorkloadProvider):
             pod_spec["serviceAccountName"] = self.service_account
 
         resource_name = self._resource_name(sandbox_id)
-
+        spec = {
+            "replicas": 1,
+            "shutdownPolicy": self.shutdown_policy,
+            "podTemplate": {
+                "metadata": {
+                    "labels": labels,
+                },
+                "spec": pod_spec,
+            },
+        }
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "Sandbox",
@@ -170,20 +179,15 @@ class AgentSandboxProvider(WorkloadProvider):
                 "namespace": namespace,
                 "labels": labels,
             },
-            "spec": {
-                "replicas": 1,
-                "shutdownTime": expires_at.isoformat(),
-                "shutdownPolicy": self.shutdown_policy,
-                "podTemplate": {
-                    "metadata": {
-                        "labels": labels,
-                    },
-                    "spec": pod_spec,
-                },
-            },
+            "spec": spec,
         }
 
         sandbox = self.template_manager.merge_with_runtime_values(runtime_manifest)
+        # Set or strip shutdownTime after merge so we override any template value
+        if expires_at is None:
+            sandbox["spec"].pop("shutdownTime", None)
+        else:
+            sandbox["spec"]["shutdownTime"] = expires_at.isoformat()
 
         created = self.k8s_client.create_custom_object(
             group=self.group,

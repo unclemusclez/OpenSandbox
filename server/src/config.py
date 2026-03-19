@@ -185,6 +185,14 @@ class ServerConfig(BaseModel):
         default=None,
         description="Bound public IP. When set, used as the host part when returning sandbox endpoints.",
     )
+    max_sandbox_timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=60,
+        description=(
+            "Maximum allowed sandbox TTL in seconds for requests that specify timeout. "
+            "Omit from config to disable the server-side upper bound."
+        ),
+    )
 
 
 class KubernetesRuntimeConfig(BaseModel):
@@ -322,6 +330,14 @@ class StorageConfig(BaseModel):
             "Allowlist of host path prefixes permitted for host bind mounts. "
             "If empty, all host paths are allowed (not recommended for production). "
             "Each entry must be an absolute path (e.g., '/data/opensandbox')."
+        ),
+    )
+    ossfs_mount_root: str = Field(
+        default="/mnt/ossfs",
+        description=(
+            "Host-side root directory where OSSFS mounts are resolved. "
+            "Resolved OSSFS host paths are built as "
+            "'ossfs_mount_root/<bucket>/<volume.subPath?>'."
         ),
     )
 

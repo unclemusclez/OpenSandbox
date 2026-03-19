@@ -21,7 +21,7 @@ using Kubernetes resources for sandbox lifecycle management.
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import HTTPException, status
@@ -42,15 +42,18 @@ from src.api.schema import (
 from src.config import AppConfig, get_config
 from src.services.constants import (
     SANDBOX_ID_LABEL,
+    SANDBOX_MANUAL_CLEANUP_LABEL,
     SandboxErrorCodes,
 )
 from src.services.helpers import matches_filter
 from src.services.sandbox_service import SandboxService
 from src.services.validators import (
+    calculate_expiration_or_raise,
     ensure_entrypoint,
     ensure_egress_configured,
     ensure_future_expiration,
     ensure_metadata_labels,
+    ensure_timeout_within_limit,
     ensure_volumes_valid,
 )
 from src.services.k8s.client import K8sClient
@@ -262,20 +265,28 @@ class KubernetesSandboxService(SandboxService):
         # Validate request
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
+        ensure_timeout_within_limit(
+            request.timeout,
+            self.app_config.server.max_sandbox_timeout_seconds,
+        )
         self._ensure_network_policy_support(request)
         self._ensure_image_auth_support(request)
         
         # Generate sandbox ID
         sandbox_id = self.generate_sandbox_id()
         
-        # Calculate expiration time
+        # Calculate expiration time (None = no TTL, manual cleanup only; same as Docker)
         created_at = datetime.now(timezone.utc)
-        expires_at = created_at + timedelta(seconds=request.timeout)
-        
+        expires_at = None
+        if request.timeout is not None:
+            expires_at = calculate_expiration_or_raise(created_at, request.timeout)
+
         # Build labels
         labels = {
             SANDBOX_ID_LABEL: sandbox_id,
         }
+        if expires_at is None:
+            labels[SANDBOX_MANUAL_CLEANUP_LABEL] = "true"
         
         # Add user metadata as labels
         if request.metadata:
@@ -596,7 +607,17 @@ class KubernetesSandboxService(SandboxService):
                         "message": f"Sandbox '{sandbox_id}' not found",
                     },
                 )
-            
+
+            current_expiration = self.workload_provider.get_expiration(workload)
+            if current_expiration is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_EXPIRATION,
+                        "message": f"Sandbox {sandbox_id} does not have automatic expiration enabled.",
+                    },
+                )
+
             # Update BatchSandbox spec.expireTime field
             self.workload_provider.update_expiration(
                 sandbox_id=sandbox_id,

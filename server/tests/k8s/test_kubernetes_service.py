@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from src.services.k8s.kubernetes_service import KubernetesSandboxService
-from src.services.constants import SandboxErrorCodes
+from src.services.constants import SANDBOX_MANUAL_CLEANUP_LABEL, SandboxErrorCodes
 from src.api.schema import ImageAuth, ListSandboxesRequest
 
 
@@ -194,6 +194,41 @@ class TestKubernetesSandboxServiceCreate:
         k8s_service.create_sandbox(create_sandbox_request)
         k8s_service.workload_provider.create_workload.assert_called_once()
 
+    def test_create_sandbox_with_no_timeout_calls_provider_with_expires_at_none_and_manual_cleanup_label(
+        self, k8s_service, create_sandbox_request
+    ):
+        """When timeout is None (manual cleanup), provider receives expires_at=None and manual-cleanup label."""
+        create_sandbox_request.timeout = None
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        k8s_service.create_sandbox(create_sandbox_request)
+
+        k8s_service.workload_provider.create_workload.assert_called_once()
+        _, kwargs = k8s_service.workload_provider.create_workload.call_args
+        assert kwargs["expires_at"] is None
+        assert kwargs["labels"].get(SANDBOX_MANUAL_CLEANUP_LABEL) == "true"
+
+    def test_create_sandbox_rejects_timeout_above_configured_maximum(
+        self, k8s_service, create_sandbox_request
+    ):
+        k8s_service.app_config.server.max_sandbox_timeout_seconds = 3600
+        create_sandbox_request.timeout = 7200
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.create_sandbox(create_sandbox_request)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+        assert "configured maximum of 3600s" in exc_info.value.detail["message"]
+        k8s_service.workload_provider.create_workload.assert_not_called()
+
 
 class TestWaitForSandboxReady:
     """_wait_for_sandbox_ready method tests"""
@@ -274,6 +309,23 @@ class TestWaitForSandboxReady:
         
         assert exc_info.value.status_code == 504  # Gateway Timeout
         assert "timeout" in exc_info.value.detail["message"].lower()
+
+
+class TestKubernetesSandboxServiceRenew:
+    def test_renew_expiration_rejects_manual_cleanup_sandbox(self, k8s_service):
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_expiration.return_value = None
+        request = MagicMock(expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.renew_expiration("test-sandbox-id", request)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_EXPIRATION
+        assert (
+            exc_info.value.detail["message"]
+            == "Sandbox test-sandbox-id does not have automatic expiration enabled."
+        )
 
 
 class TestGetSandbox:
@@ -533,3 +585,19 @@ class TestRenewExpiration:
             k8s_service.renew_expiration("test-sandbox-id", request)
         
         assert exc_info.value.status_code == 400
+
+    def test_renew_returns_409_when_sandbox_has_no_expiration(self, k8s_service):
+        """Renew is rejected with 409 when sandbox has no TTL (manual cleanup)."""
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_expiration.return_value = None
+        from src.api.schema import RenewSandboxExpirationRequest
+        request = RenewSandboxExpirationRequest(
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.renew_expiration("no-ttl-sandbox", request)
+
+        assert exc_info.value.status_code == 409
+        assert "does not have automatic expiration" in exc_info.value.detail["message"]
+        k8s_service.workload_provider.update_expiration.assert_not_called()

@@ -66,7 +66,7 @@ opensandbox-server init-config ~/.sandbox.toml --example docker
 ```
 
 > If you prefer working from source, you can still clone the repo for development, but you no longer need to clone this repository just to start the server.
->
+> You'll also require an instance of docker running.
 > ```bash
 > git clone https://github.com/alibaba/OpenSandbox.git
 > cd OpenSandbox/server
@@ -105,7 +105,7 @@ from opensandbox.models import WriteEntry
 async def main() -> None:
     # 1. Create a sandbox
     sandbox = await Sandbox.create(
-        "opensandbox/code-interpreter:v1.0.1",
+        "opensandbox/code-interpreter:v1.0.2",
         entrypoint=["/opt/opensandbox/code-interpreter.sh"],
         env={"PYTHON_VERSION": "3.11"},
         timeout=timedelta(minutes=10),
