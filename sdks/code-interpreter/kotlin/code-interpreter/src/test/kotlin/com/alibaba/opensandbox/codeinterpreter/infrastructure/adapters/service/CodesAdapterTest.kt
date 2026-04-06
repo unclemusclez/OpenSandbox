@@ -81,6 +81,32 @@ class CodesAdapterTest {
     }
 
     @Test
+    fun `createContext should include endpoint headers`() {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"id":"ctx-123", "language":"python"}"""),
+        )
+
+        val host = mockWebServer.hostName
+        val port = mockWebServer.port
+        val config =
+            ConnectionConfig.builder()
+                .domain("$host:$port")
+                .protocol("http")
+                .build()
+        val endpoint = SandboxEndpoint("$host:$port", mapOf("X-Endpoint" to "endpoint"))
+
+        HttpClientProvider(config).use { provider ->
+            val adapter = CodesAdapter(endpoint, provider)
+            adapter.createContext("python")
+        }
+
+        val request = mockWebServer.takeRequest()
+        assertEquals("endpoint", request.getHeader("X-Endpoint"))
+    }
+
+    @Test
     fun `run should stream events correctly`() {
         // SSE format
         val event1 = """{"type":"stdout","text":"Hello World","timestamp":1672531200000}"""
@@ -113,15 +139,52 @@ class CodesAdapterTest {
                 .handlers(handlers)
                 .build()
 
-        codesAdapter.run(request)
+        val execution = codesAdapter.run(request)
 
         assertTrue(latch.await(2, TimeUnit.SECONDS), "Timed out waiting for completion")
         assertEquals("Hello World", receivedOutput.toString())
         assertEquals(100L, executionTime)
+        assertEquals(100L, execution.complete?.executionTimeInMillis)
+        assertEquals(null, execution.exitCode)
 
         val recordedRequest = mockWebServer.takeRequest()
         assertEquals("/code", recordedRequest.path)
         assertEquals("POST", recordedRequest.method)
+    }
+
+    @Test
+    fun `run should include endpoint headers`() {
+        val event1 = """{"type":"stdout","text":"Hello World","timestamp":1672531200000}"""
+        val event2 = """{"type":"execution_complete","execution_time":100,"timestamp":1672531201000}"""
+
+        mockWebServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("$event1\n$event2\n"),
+        )
+
+        val host = mockWebServer.hostName
+        val port = mockWebServer.port
+        val config =
+            ConnectionConfig.builder()
+                .domain("$host:$port")
+                .protocol("http")
+                .build()
+        val endpoint = SandboxEndpoint("$host:$port", mapOf("X-Endpoint" to "endpoint"))
+
+        HttpClientProvider(config).use { provider ->
+            val adapter = CodesAdapter(endpoint, provider)
+            val request =
+                RunCodeRequest.builder()
+                    .code("print('Hello World')")
+                    .handlers(ExecutionHandlers.builder().build())
+                    .build()
+
+            adapter.run(request)
+        }
+
+        val recordedRequest = mockWebServer.takeRequest()
+        assertEquals("endpoint", recordedRequest.getHeader("X-Endpoint"))
     }
 
     @Test

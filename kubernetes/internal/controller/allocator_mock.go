@@ -11,6 +11,7 @@ import (
 	gomock "github.com/golang/mock/gomock"
 
 	v1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // MockAllocationStore is a mock of AllocationStore interface.
@@ -63,6 +64,46 @@ func (m *MockAllocationStore) SetAllocation(ctx context.Context, pool *v1alpha1.
 func (mr *MockAllocationStoreMockRecorder) SetAllocation(ctx, pool, allocation interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAllocation", reflect.TypeOf((*MockAllocationStore)(nil).SetAllocation), ctx, pool, allocation)
+}
+
+// ClearAllocation mocks base method.
+func (m *MockAllocationStore) ClearAllocation(ctx context.Context, ns string, poolName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClearAllocation", ctx, ns, poolName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ClearAllocation indicates an expected call of ClearAllocation.
+func (mr *MockAllocationStoreMockRecorder) ClearAllocation(ctx, ns, poolName interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearAllocation", reflect.TypeOf((*MockAllocationStore)(nil).ClearAllocation), ctx, ns, poolName)
+}
+
+// UpdateAllocation mocks base method.
+func (m *MockAllocationStore) UpdateAllocation(ctx context.Context, ns string, poolName string, sandboxName string, pods []string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "UpdateAllocation", ctx, ns, poolName, sandboxName, pods)
+}
+
+// UpdateAllocation indicates an expected call of UpdateAllocation.
+func (mr *MockAllocationStoreMockRecorder) UpdateAllocation(ctx, ns, poolName, sandboxName, pods interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateAllocation", reflect.TypeOf((*MockAllocationStore)(nil).UpdateAllocation), ctx, ns, poolName, sandboxName, pods)
+}
+
+// Recover mocks base method.
+func (m *MockAllocationStore) Recover(ctx context.Context, c client.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Recover", ctx, c)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Recover indicates an expected call of Recover.
+func (mr *MockAllocationStoreMockRecorder) Recover(ctx, c interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Recover", reflect.TypeOf((*MockAllocationStore)(nil).Recover), ctx, c)
 }
 
 // MockAllocationSyncer is a mock of AllocationSyncer interface.
@@ -156,16 +197,57 @@ func (m *MockAllocator) EXPECT() *MockAllocatorMockRecorder {
 }
 
 // Schedule mocks base method.
-func (m *MockAllocator) Schedule(ctx context.Context, spec *AllocSpec) (*AllocStatus, error) {
+func (m *MockAllocator) Schedule(ctx context.Context, spec *AllocSpec) (*AllocStatus, []SandboxSyncInfo, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Schedule", ctx, spec)
 	ret0, _ := ret[0].(*AllocStatus)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].([]SandboxSyncInfo)
+	ret2, _ := ret[2].(bool)
+	ret3, _ := ret[3].(error)
+	return ret0, ret1, ret2, ret3
 }
 
 // Schedule indicates an expected call of Schedule.
 func (mr *MockAllocatorMockRecorder) Schedule(ctx, spec interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Schedule", reflect.TypeOf((*MockAllocator)(nil).Schedule), ctx, spec)
+}
+
+// GetPoolAllocation mocks base method.
+func (m *MockAllocator) GetPoolAllocation(ctx context.Context, pool *v1alpha1.Pool) (map[string]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPoolAllocation", ctx, pool)
+	ret0, _ := ret[0].(map[string]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPoolAllocation indicates an expected call of GetPoolAllocation.
+func (mr *MockAllocatorMockRecorder) GetPoolAllocation(ctx, pool interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPoolAllocation", reflect.TypeOf((*MockAllocator)(nil).GetPoolAllocation), ctx, pool)
+}
+
+func (m *MockAllocator) PersistPoolAllocation(ctx context.Context, pool *v1alpha1.Pool, status *AllocStatus) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PersistPoolAllocation", ctx, pool, status)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+func (mr *MockAllocatorMockRecorder) PersistPoolAllocation(ctx, pool, status interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PersistPoolAllocation", reflect.TypeOf((*MockAllocator)(nil).PersistPoolAllocation), ctx, pool, status)
+}
+
+func (m *MockAllocator) SyncSandboxAllocation(ctx context.Context, sandbox *v1alpha1.BatchSandbox, pods []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SyncSandboxAllocation", ctx, sandbox, pods)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+func (mr *MockAllocatorMockRecorder) SyncSandboxAllocation(ctx, sandbox, pods interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SyncSandboxAllocation", reflect.TypeOf((*MockAllocator)(nil).SyncSandboxAllocation), ctx, sandbox, pods)
 }

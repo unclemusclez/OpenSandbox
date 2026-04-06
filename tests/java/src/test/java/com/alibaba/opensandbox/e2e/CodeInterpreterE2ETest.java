@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
  * <p>Tests code execution capabilities including: - Multi-language code execution (Java, Python,
  * Go, TypeScript) - Session state management and variable persistence - Context isolation between
  * different execution contexts - Error handling and recovery mechanisms - Event handling patterns
- * identical to runCommand
+ * from code-interpreter/Jupyter streams
  *
  * <p>Uses the shared CodeInterpreter instance from BaseE2ETest.
  */
@@ -224,6 +224,9 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         assertNotNull(simpleResult.getId());
         assertFalse(simpleResult.getId().isBlank());
         assertEquals("4", simpleResult.getResult().get(0).getText());
+        assertNull(simpleResult.getExitCode());
+        assertNotNull(simpleResult.getComplete());
+        assertTrue(simpleResult.getComplete().getExecutionTimeInMillis() >= 0);
         assertTerminalEventContract(initEvents, completedEvents, errors, simpleResult.getId());
         assertTrue(errors.isEmpty());
         assertTrue(stdoutMessages.stream().anyMatch(m -> m.getText().contains("Hello from Java!")));
@@ -249,8 +252,12 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         assertNotNull(varResult);
         assertNotNull(varResult.getId());
         assertEquals("4", varResult.getResult().get(0).getText());
+        assertNull(varResult.getExitCode());
+        assertNotNull(varResult.getComplete());
 
-        // 3. Java error handling test (mutually exclusive contract)
+        // 3. Java error handling test.
+        // Jupyter may emit execution_complete and error for the same run, so
+        // complete is not mutually exclusive with error here.
         stdoutMessages.clear();
         stderrMessages.clear();
         results.clear();
@@ -270,6 +277,7 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         assertNotNull(errorResult.getId());
         assertNotNull(errorResult.getError());
         assertEquals("EvalException", errorResult.getError().getName());
+        assertNull(errorResult.getExitCode());
         assertTerminalEventContract(initEvents, completedEvents, errors, errorResult.getId());
     }
 
@@ -332,6 +340,9 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
 
         assertNotNull(simpleResult);
         assertNotNull(simpleResult.getId());
+        assertNull(simpleResult.getExitCode());
+        assertNotNull(simpleResult.getComplete());
+        assertTrue(simpleResult.getComplete().getExecutionTimeInMillis() >= 0);
         assertFalse(completedEvents.isEmpty());
         assertTrue(errors.isEmpty());
 
@@ -352,6 +363,8 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         assertNotNull(varResult);
         assertNotNull(varResult.getId());
         assertEquals("4", varResult.getResult().get(0).getText());
+        assertNull(varResult.getExitCode());
+        assertNotNull(varResult.getComplete());
 
         // 3. Test variable persistence across executions
         RunCodeRequest persistRequest =
@@ -368,6 +381,8 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
 
         assertNotNull(persistResult);
         assertNotNull(persistResult.getId());
+        assertNull(persistResult.getExitCode());
+        assertNotNull(persistResult.getComplete());
 
         // 4. Python error handling
         RunCodeRequest errorRequest =
@@ -382,6 +397,7 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
 
         assertNotNull(errorResult);
         assertNotNull(errorResult.getId());
+        assertNull(errorResult.getExitCode());
         assertTrue(
                 errorResult.getError() != null || !errorResult.getLogs().getStderr().isEmpty(),
                 "Python error execution should capture runtime errors");

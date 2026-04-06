@@ -19,11 +19,17 @@
   <a href="https://badge.fury.io/js/@alibaba-group%2Fopensandbox">
     <img src="https://badge.fury.io/js/@alibaba-group%2Fopensandbox.svg" alt="npm version" />
   </a>
+  <a href="https://landscape.cncf.io/?item=orchestration-management--scheduling-orchestration--opensandbox">
+    <img src="https://img.shields.io/badge/CNCF-Landscape-0C66E4" alt="CNCF Landscape" />
+  </a>
   <a href="https://qr.dingtalk.com/action/joingroup?code=v1,k1,A4Bgl5q1I1eNU/r33D18YFNrMY108aFF38V+r19RJOM=&_dt_no_comment=1&origin=11">
     <img src="https://img.shields.io/badge/DingTalk-Join-0089FF?logo=dingtalk&logoColor=white" alt="DingTalk" />
   </a>
   <a href="https://github.com/alibaba/OpenSandbox/actions">
     <img src="https://github.com/alibaba/OpenSandbox/actions/workflows/real-e2e.yml/badge.svg?branch=main" alt="E2E Status" />
+  </a>
+  <a href="https://github.com/alibaba/OpenSandbox/actions">
+    <img src="https://github.com/alibaba/OpenSandbox/actions/workflows/kubernetes-nightly-build.yml/badge.svg?branch=main" alt="E2E Status" />
   </a>
 </p>
 
@@ -33,6 +39,8 @@
 中文 | [English](../README.md)
 
 OpenSandbox 是一个面向 AI 应用场景设计的「通用沙箱平台」，为LLM相关的能力（命令执行、文件操作、代码执行、浏览器操作、Agent 运行等）提供 **多语言 SDK、沙箱接口协议和沙箱运行时**。
+
+OpenSandbox 已进入 [CNCF Landscape](https://landscape.cncf.io/?item=orchestration-management--scheduling-orchestration--opensandbox)。
 
 ## 核心特性
 
@@ -62,11 +70,9 @@ opensandbox-server init-config ~/.sandbox.toml --example docker-zh
 > 如果需要开发或使用源码编译，可通过clone仓库进行开发。
 > 
 > ```bash
-> git clone https://github.com/alibaba/OpenSandbox.git
-> cd OpenSandbox/server
-> uv sync
-> cp example.config.toml ~/.sandbox.toml # Copy configuration file
-> uv run python -m src.main # Start the service
+> git clone https://github.com/alibaba/OpenSandbox.git && cd OpenSandbox/server
+> cp opensandbox_server/examples/example.config.zh.toml ~/.sandbox.toml # 从源码目录复制配置文件
+> uv sync && uv run python -m opensandbox_server.main # Start the service
 > ```
 
 #### 2. 启动沙箱 Server
@@ -152,17 +158,12 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 
 - **[code-interpreter](../examples/code-interpreter/README.md)** - Code Interpreter SDK 的端到端沙箱流程示例。
 - **[aio-sandbox](../examples/aio-sandbox/README.md)** - 使用 OpenSandbox SDK 与 agent-sandbox 的一体化沙箱示例。
-- **[agent-sandbox](../examples/agent-sandbox/README.md)** - 通过 kubernetes-sigs/agent-sandbox 在 Kubernetes 上运行 OpenSandbox。
+- **[agent-sandbox](../examples/agent-sandbox/README.md)** - 通过 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) 在 Kubernetes 上运行 OpenSandbox。
+- **卷存储** — [Docker PVC / 命名卷](../examples/docker-pvc-volume-mount/README.md)、[Docker OSSFS](../examples/docker-ossfs-volume-mount/README.md)、[Kubernetes PVC](../examples/kubernetes-pvc-volume-mount/README.md)：持久化与共享存储用法。
 
 #### 🤖 Coding Agent 集成
 
-在 OpenSandbox 中，集成各类 Coding Agent，包括 Claude Code、Google Gemini、OpenAI Codex、Kimi CLI 等。
-
-- **[claude-code](../examples/claude-code/README.md)** - 在 OpenSandbox 中运行 Claude Code。
-- **[gemini-cli](../examples/gemini-cli/README.md)** - 在 OpenSandbox 中运行 Google Gemini CLI。
-- **[codex-cli](../examples/codex-cli/README.md)** - 在 OpenSandbox 中运行 OpenAI Codex CLI。
-- **[kimi-cli](../examples/kimi-cli/README.md)** - 在 OpenSandbox 中运行 [Kimi CLI](https://github.com/MoonshotAI/kimi-cli)（Moonshot AI）。
-- **[iflow-cli](../examples/iflow-cli/README.md)** - 在 OpenSandbox 中运行 iFlow CLI。
+- **Coding CLI** — [Claude Code](../examples/claude-code/README.md)、[Gemini CLI](../examples/gemini-cli/README.md)、[OpenAI Codex CLI](../examples/codex-cli/README.md)、[Qwen Code](../examples/qwen-code/README.md)、[Kimi CLI](../examples/kimi-cli/README.md)：在 OpenSandbox 中运行各厂商 CLI。
 - **[langgraph](../examples/langgraph/README.md)** - 基于 LangGraph 状态机编排沙箱任务与回退重试。
 - **[google-adk](../examples/google-adk/README.md)** - 使用 Google ADK 通过 OpenSandbox 工具读写文件并执行命令。
 - **[nullclaw](../examples/nullclaw/README.md)** - 在沙箱中启动 Nullclaw Gateway。

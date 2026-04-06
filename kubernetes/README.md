@@ -30,6 +30,21 @@ The Pool custom resource maintains a pool of pre-warmed compute resources to ena
 - Automatic resource allocation and deallocation based on demand
 - Real-time status monitoring showing total, allocated, and available resources
 
+### Pod Eviction
+Pool supports graceful pod eviction for scenarios like node maintenance or resource reclamation:
+
+**How it works:**
+- Users label a pod with `pool.opensandbox.io/evict` to request eviction
+- The controller skips pods already allocated to BatchSandbox (protecting in-use workloads)
+- Idle pods are deleted, triggering the pool to replenish capacity
+- Pods marked for eviction are excluded from new allocations
+
+**Custom eviction behavior:**
+You can implement custom eviction strategies by:
+1. Setting `pool.opensandbox.io/eviction-handler` label on the Pool to select your handler
+2. Implementing the `EvictionHandler` interface with `NeedsEviction()` and `Evict()` methods
+3. Registering your handler in the factory function
+
 ### Task Orchestration
 Integrated task management system that executes custom workloads within sandboxes:
 - **Optional Execution**: Task scheduling is completely optional - sandboxes can be created without tasks
@@ -44,7 +59,7 @@ Intelligent resource management features:
 
 ## Runtime API Support Notes
 
-- `pause` / `resume` lifecycle APIs are currently **not supported** by the Kubernetes runtime.
+- `pause` / `resume` lifecycle APIs are currently **NOT SUPPORTED** by the Kubernetes runtime.
 - Calling these APIs against Kubernetes runtime returns `501 Not Implemented`.
 - Pause/resume semantics in OpenSandbox mean preserving in-memory process state (container-level suspend/resume). Kubernetes provider currently focuses on create/get/list/delete/renew workflows.
 
@@ -137,7 +152,7 @@ kind load docker-image <controller-image-name>:<tag>
 kind load docker-image <task-executor-image-name>:<tag>
 ```
 
-For example, if you built your images with `make docker-build IMG=my-controller:latest`, you would load them with:
+For example, if you built your images with `make docker-build CONTROLLER_IMG=my-controller:latest`, you would load them with:
 ```sh
 kind load docker-image my-controller:latest
 ```
@@ -240,7 +255,7 @@ If you're developing or need to customize the chart:
 1. **Build and push your images:**
    ```sh
    # Build and push the controller image
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # Build and push the task-executor image
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -288,7 +303,7 @@ For more configuration options and advanced usage, see the [Helm Chart README](c
 1. **Build and push your images:**
    ```sh
    # Build and push the controller image
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # Build and push the task-executor image
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -303,7 +318,7 @@ For more configuration options and advanced usage, see the [Helm Chart README](c
 
 3. **Deploy the Manager to the cluster:**
    ```sh
-   make deploy IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
+   make deploy CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
    ```
 
    **NOTE**: you may need to grant yourself cluster-admin privileges or be logged in as admin to ensure you have cluster-admin privileges before running the commands.
@@ -396,6 +411,14 @@ Apply the pool configuration:
 kubectl apply -f pool-example.yaml
 ```
 
+**Optional: Configure scale rate control** - Add `scaleStrategy` to limit the pace of scaling:
+```yaml
+  scaleStrategy:
+    maxUnavailable: "20%"  # or absolute number like 5
+```
+
+This controls how many pods can be unavailable during scaling. For example, with `poolMax=50` and `maxUnavailable=20%`, at most 10 pods will be scaled at once.
+
 Create a batch of sandboxes using the pool:
 
 ```yaml
@@ -411,6 +434,53 @@ spec:
 Apply the batch sandbox configuration:
 ```sh
 kubectl apply -f pooled-batch-sandbox.yaml
+```
+
+##### Pooled Sandbox with Scale Rate Control
+
+The Pool supports configurable scale rate control through `scaleStrategy`, which limits the pace of scaling operations to prevent resource contention:
+
+```yaml
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: Pool
+metadata:
+  name: scale-controlled-pool
+spec:
+  template:
+    spec:
+      containers:
+      - name: sandbox-container
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+  capacitySpec:
+    bufferMax: 20
+    bufferMin: 5
+    poolMax: 50
+    poolMin: 10
+  scaleStrategy:
+    # MaxUnavailable controls the maximum number of pods that can be unavailable during scaling.
+    # Can be an absolute number (ex: 5) or a percentage of desired pods (ex: "10%").
+    # Defaults to 25% if not specified.
+    maxUnavailable: "20%"
+```
+
+**ScaleStrategy parameters:**
+
+- **maxUnavailable**: Specifies the maximum number of pods that can be unavailable during scaling operations. This can be:
+  - An absolute number (e.g., `5` means at most 5 pods can be unavailable at once)
+  - A percentage string (e.g., `"10%"` means at most 10% of desired pods can be unavailable)
+  - Defaults to `25%` if not specified
+
+**Use cases:**
+
+- **Prevent resource contention**: Limit scaling pace to avoid overwhelming the cluster with simultaneous pod creation/deletion
+- **Gradual scaling**: Ensure smooth scaling transitions by capping the rate of change
+- **Production stability**: Protect production workloads from aggressive scaling that might impact service quality
+
+Apply the pool configuration:
+```sh
+kubectl apply -f pool-with-scale-strategy.yaml
 ```
 
 ##### Pooled Sandbox With Heterogeneous Tasks

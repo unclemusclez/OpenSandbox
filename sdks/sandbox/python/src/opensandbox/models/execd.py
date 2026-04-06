@@ -160,6 +160,14 @@ class Execution(BaseModel):
     error: ExecutionError | None = Field(
         default=None, description="Error information if failed"
     )
+    complete: ExecutionComplete | None = Field(
+        default=None, description="Completion metadata if execution completed"
+    )
+    exit_code: int | None = Field(
+        default=None,
+        description="Command exit code when available",
+        alias="exit_code",
+    )
     logs: ExecutionLogs = Field(
         default_factory=ExecutionLogs, description="Output logs"
     )

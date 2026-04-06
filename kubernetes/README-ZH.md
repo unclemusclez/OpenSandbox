@@ -30,6 +30,21 @@ Pool 自定义资源维护一个预热的计算资源池，以实现快速沙箱
 - 基于需求的自动资源分配和释放
 - 实时状态监控，显示总数、已分配和可用资源
 
+### Pod 驱逐
+Pool 支持优雅的 Pod 驱逐，适用于节点维护或资源回收等场景：
+
+**工作原理：**
+- 用户通过给 Pod 打上 `pool.opensandbox.io/evict` 标签请求驱逐
+- 控制器会跳过已分配给 BatchSandbox 的 Pod（保护使用中的工作负载）
+- 空闲 Pod 将被删除，触发池补充容量
+- 标记驱逐的 Pod 不会被分配给新的 BatchSandbox
+
+**自定义驱逐行为：**
+您可以通过以下方式实现自定义驱逐策略：
+1. 在 Pool 上设置 `pool.opensandbox.io/eviction-handler` 标签选择您的处理器
+2. 实现 `EvictionHandler` 接口，包含 `NeedsEviction()` 和 `Evict()` 方法
+3. 在工厂函数中注册您的处理器
+
 ### 任务编排
 集成的任务管理系统，在沙箱内执行自定义工作负载：
 - **可选执行**：任务调度完全可选 - 可以在不带任务的情况下创建沙箱
@@ -138,7 +153,7 @@ kind load docker-image <controller-image-name>:<tag>
 kind load docker-image <task-executor-image-name>:<tag>
 ```
 
-例如，如果您使用 `make docker-build IMG=my-controller:latest` 构建镜像，则使用以下命令加载：
+例如，如果您使用 `make docker-build CONTROLLER_IMG=my-controller:latest` 构建镜像，则使用以下命令加载：
 ```sh
 kind load docker-image my-controller:latest
 ```
@@ -241,7 +256,7 @@ helm install opensandbox-controller \
 1. **构建和推送您的镜像：**
    ```sh
    # 构建和推送控制器镜像
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # 构建和推送任务执行器镜像
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -289,7 +304,7 @@ helm uninstall opensandbox-controller -n opensandbox-system
 1. **构建和推送您的镜像：**
    ```sh
    # 构建和推送控制器镜像
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # 构建和推送任务执行器镜像
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -304,7 +319,7 @@ helm uninstall opensandbox-controller -n opensandbox-system
 
 3. **将管理器部署到集群：**
    ```sh
-   make deploy IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
+   make deploy CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
    ```
 
    **注意**：您可能需要授予自己集群管理员权限或以管理员身份登录以确保您在运行命令之前具有集群管理员权限。
@@ -396,6 +411,14 @@ spec:
 ```sh
 kubectl apply -f pool-example.yaml
 ```
+
+**可选：配置扩容速率控制** - 添加 `scaleStrategy` 限制扩容节奏：
+```yaml
+  scaleStrategy:
+    maxUnavailable: "20%"  # 或绝对数量如 5
+```
+
+该配置控制扩容过程中允许不可用的 Pod 数量。例如，当 `poolMax=50` 且 `maxUnavailable=20%` 时，每次最多扩容 10 个 Pod。
 
 使用资源池创建一批沙箱：
 

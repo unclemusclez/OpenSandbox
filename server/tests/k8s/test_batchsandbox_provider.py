@@ -21,11 +21,20 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from kubernetes.client import ApiException
 
-from src.api.schema import ImageSpec, ImageAuth, NetworkPolicy, NetworkRule
-from src.config import AppConfig, ExecdInitResources, KubernetesRuntimeConfig, RuntimeConfig
-from src.services.k8s.batchsandbox_provider import BatchSandboxProvider
-from src.services.k8s.image_pull_secret_helper import IMAGE_AUTH_SECRET_PREFIX
-from src.services.k8s.volume_helper import apply_volumes_to_pod_spec
+from opensandbox_server.api.schema import ImageSpec, ImageAuth, NetworkPolicy, NetworkRule
+from opensandbox_server.config import (
+    AppConfig,
+    EGRESS_MODE_DNS,
+    EGRESS_MODE_DNS_NFT,
+    ExecdInitResources,
+    KubernetesRuntimeConfig,
+    RuntimeConfig,
+)
+from opensandbox_server.services.constants import SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY
+from opensandbox_server.services.k8s.batchsandbox_provider import BatchSandboxProvider
+from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_TOKEN
+from opensandbox_server.services.k8s.image_pull_secret_helper import IMAGE_AUTH_SECRET_PREFIX
+from opensandbox_server.services.k8s.volume_helper import apply_volumes_to_pod_spec
 
 
 def _app_config_with_template(template_file_path: str) -> AppConfig:
@@ -1216,7 +1225,7 @@ class TestBatchSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.3",
+            egress_image="opensandbox/egress:v1.0.4",
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
@@ -1229,22 +1238,88 @@ class TestBatchSandboxProviderEgress:
         # Find sidecar container
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
         assert sidecar is not None
-        assert sidecar["image"] == "opensandbox/egress:v1.0.3"
+        assert sidecar["image"] == "opensandbox/egress:v1.0.4"
         
         # Verify sidecar has environment variable
         env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
         assert "OPENSANDBOX_EGRESS_RULES" in env_vars
-        
-        # Verify sidecar has NET_ADMIN capability
-        assert "securityContext" in sidecar
-        assert "capabilities" in sidecar["securityContext"]
-        assert "add" in sidecar["securityContext"]["capabilities"]
-        assert "NET_ADMIN" in sidecar["securityContext"]["capabilities"]["add"]
+        assert env_vars["OPENSANDBOX_EGRESS_MODE"] == EGRESS_MODE_DNS
 
-    def test_create_workload_with_network_policy_adds_ipv6_disable_sysctls(self, mock_k8s_client):
-        """
-        Test case: Verify IPv6 disable sysctls are added to Pod spec
-        """
+        caps = sidecar.get("securityContext", {}).get("capabilities", {})
+        assert "NET_ADMIN" in caps.get("add", [])
+        assert sidecar.get("securityContext", {}).get("privileged") is not True
+        assert "command" not in sidecar
+
+        inits = pod_spec.get("initContainers", [])
+        assert len(inits) == 1
+        execd_init = inits[0]
+        assert execd_init["name"] == "execd-installer"
+        assert execd_init["image"] == "execd:latest"
+        assert execd_init.get("securityContext", {}).get("privileged") is True
+        assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
+
+    def test_create_workload_with_network_policy_persists_annotation_and_sidecar_token(self, mock_k8s_client):
+        provider = BatchSandboxProvider(mock_k8s_client)
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "test-id", "uid": "test-uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=None,
+            execd_image="execd:latest",
+            network_policy=NetworkPolicy(default_action="deny", egress=[]),
+            egress_image="opensandbox/egress:v1.0.4",
+            annotations={SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY: "egress-token"},
+            egress_auth_token="egress-token",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        assert body["metadata"]["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] == "egress-token"
+
+        containers = body["spec"]["template"]["spec"]["containers"]
+        sidecar = next((c for c in containers if c["name"] == "egress"), None)
+        assert sidecar is not None
+        env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
+        assert env_vars[OPENSANDBOX_EGRESS_TOKEN] == "egress-token"
+        assert env_vars["OPENSANDBOX_EGRESS_MODE"] == EGRESS_MODE_DNS
+
+    def test_create_workload_with_egress_mode_dns_nft(self, mock_k8s_client):
+        provider = BatchSandboxProvider(mock_k8s_client)
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "test-id", "uid": "test-uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=None,
+            execd_image="execd:latest",
+            network_policy=NetworkPolicy(default_action="deny", egress=[]),
+            egress_image="opensandbox/egress:v1.0.4",
+            egress_mode=EGRESS_MODE_DNS_NFT,
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        containers = body["spec"]["template"]["spec"]["containers"]
+        sidecar = next((c for c in containers if c["name"] == "egress"), None)
+        assert sidecar is not None
+        env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
+        assert env_vars["OPENSANDBOX_EGRESS_MODE"] == EGRESS_MODE_DNS_NFT
+
+    def test_create_workload_with_network_policy_does_not_add_pod_ipv6_sysctls(self, mock_k8s_client):
+        """IPv6 all.disable is applied in privileged execd init, not Pod sysctls."""
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
             "metadata": {"name": "test-id", "uid": "test-uid"}
@@ -1267,27 +1342,19 @@ class TestBatchSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.3",
+            egress_image="opensandbox/egress:v1.0.4",
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["template"]["spec"]
-        
-        # Verify securityContext with sysctls exists
-        assert "securityContext" in pod_spec
-        assert "sysctls" in pod_spec["securityContext"]
-        
-        sysctls = pod_spec["securityContext"]["sysctls"]
-        sysctl_names = {s["name"] for s in sysctls}
-        
-        # Verify all IPv6 disable sysctls are present
-        assert "net.ipv6.conf.all.disable_ipv6" in sysctl_names
-        assert "net.ipv6.conf.default.disable_ipv6" in sysctl_names
-        assert "net.ipv6.conf.lo.disable_ipv6" in sysctl_names
-        
-        # Verify all values are "1"
-        for sysctl in sysctls:
-            assert sysctl["value"] == "1"
+
+        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get("securityContext", {})
+
+        sidecar = next(c for c in pod_spec["containers"] if c["name"] == "egress")
+        assert "command" not in sidecar
+        execd_init = pod_spec["initContainers"][0]
+        assert execd_init["name"] == "execd-installer"
+        assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
 
     def test_create_workload_with_network_policy_drops_net_admin_from_main_container(self, mock_k8s_client):
         """
@@ -1315,7 +1382,7 @@ class TestBatchSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.3",
+            egress_image="opensandbox/egress:v1.0.4",
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
@@ -1398,7 +1465,7 @@ class TestBatchSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.3",
+            egress_image="opensandbox/egress:v1.0.4",
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
@@ -1489,7 +1556,7 @@ spec:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.3",
+            egress_image="opensandbox/egress:v1.0.4",
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
@@ -1503,10 +1570,9 @@ spec:
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
         assert sidecar is not None
         
-        # Verify IPv6 sysctls are present
-        assert "securityContext" in pod_spec
-        assert "sysctls" in pod_spec["securityContext"]
-        
+        # Pod-level IPv6 sysctls are not injected for egress (sidecar startup handles all.disable)
+        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get("securityContext", {})
+
         # Verify template volumes are still merged
         volume_names = [v["name"] for v in pod_spec["volumes"]]
         assert "sandbox-shared-data" in volume_names
@@ -1654,7 +1720,7 @@ spec:
         - Volume mount is added to main container
         - claimName is correctly set
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
@@ -1709,7 +1775,7 @@ spec:
         """
         Test creating workload with read-only PVC volume mount.
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
@@ -1751,7 +1817,7 @@ spec:
         """
         Test creating workload with PVC volume mount with subPath.
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
@@ -1794,7 +1860,7 @@ spec:
         """
         Test creating workload with hostPath volume mount.
         """
-        from src.api.schema import Volume, Host
+        from opensandbox_server.api.schema import Volume, Host
 
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
@@ -1845,7 +1911,7 @@ spec:
         """
         Test creating workload with multiple volumes (PVC and hostPath).
         """
-        from src.api.schema import Volume, PVC, Host
+        from opensandbox_server.api.schema import Volume, PVC, Host
 
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
@@ -1898,7 +1964,7 @@ spec:
         """
         Test that pool mode rejects volumes with clear error message.
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         provider = BatchSandboxProvider(mock_k8s_client)
 
@@ -1944,7 +2010,7 @@ spec:
         """
         Test apply_volumes_to_pod_spec with no containers returns early without error.
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         pod_spec = {"volumes": []}
         volumes = [Volume(name="test", pvc=PVC(claim_name="pvc"), mount_path="/mnt")]
@@ -1959,7 +2025,7 @@ spec:
         """
         Test apply_volumes_to_pod_spec rejects volume names that collide with internal volumes.
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         pod_spec = {
             "containers": [{"name": "sandbox", "volumeMounts": []}],
@@ -1979,7 +2045,7 @@ spec:
         Kubernetes volume is created; multiple volumeMounts reference it (avoids
         CSI driver issues from duplicate PVC volume definitions).
         """
-        from src.api.schema import Volume, PVC
+        from opensandbox_server.api.schema import Volume, PVC
 
         pod_spec = {
             "containers": [{"name": "main", "volumeMounts": []}],

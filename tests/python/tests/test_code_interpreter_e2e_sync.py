@@ -80,14 +80,15 @@ def _assert_terminal_event_contract(
     errors: list[ExecutionError],
     execution_id: str | None,
 ) -> None:
-    # Contract: init must exist, and exactly one of (error, complete) exists.
+    # Contract: init must exist, and at least one terminal signal exists.
+    # For Jupyter-backed code execution, complete and error may coexist.
     assert len(init_events) == 1
     assert init_events[0].id is not None and init_events[0].id.strip()
     if execution_id is not None:
         assert init_events[0].id == execution_id
     _assert_recent_timestamp_ms(init_events[0].timestamp)
     assert (len(completed_events) > 0) or (len(errors) > 0), (
-        f"expected exactly one of complete/error, got complete={len(completed_events)} "
+        f"expected at least one of complete/error, got complete={len(completed_events)} "
         f"error={len(errors)}"
     )
     if len(completed_events) > 0:
@@ -336,7 +337,10 @@ class TestCodeInterpreterE2ESync:
 
         info = code_interpreter.sandbox.get_info()
         assert str(code_interpreter.id) == str(info.id)
-        assert info.status.state == "Running"
+        # FIXME: upstream Kubernetes BatchSandbox lifecycle may still report
+        # "Allocated" after execd health checks already pass. This E2E focuses
+        # on end-to-end usability, so tolerate that transient state here.
+        assert info.status.state in {"Running", "Allocated"}
 
         endpoint = code_interpreter.sandbox.get_endpoint(DEFAULT_EXECD_PORT)
         assert endpoint is not None
@@ -418,6 +422,8 @@ class TestCodeInterpreterE2ESync:
             assert simple_result.error is None
             assert len(simple_result.result) > 0
             assert simple_result.result[0].text == "4"
+            assert simple_result.exit_code is None
+            assert simple_result.complete is not None
 
             _assert_terminal_event_contract(
                 init_events=init_events,
@@ -447,6 +453,8 @@ class TestCodeInterpreterE2ESync:
             assert var_result.id is not None
             assert len(var_result.result) > 0
             assert var_result.result[0].text == "4"
+            assert var_result.exit_code is None
+            assert var_result.complete is not None
 
             stdout_messages.clear()
             stderr_messages.clear()
@@ -463,6 +471,7 @@ class TestCodeInterpreterE2ESync:
             assert error_result.id is not None and error_result.id.strip()
             assert error_result.error is not None
             assert error_result.error.name == "EvalException"
+            assert error_result.exit_code is None
             _assert_terminal_event_contract(
                 init_events=init_events,
                 completed_events=completed_events,

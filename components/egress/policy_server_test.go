@@ -20,9 +20,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/stretchr/testify/require"
@@ -54,6 +56,28 @@ func (s *stubNft) ApplyStatic(_ context.Context, p *policy.NetworkPolicy) error 
 
 func (s *stubNft) AddResolvedIPs(_ context.Context, _ []nftables.ResolvedIP) error {
 	return nil
+}
+
+func TestHandlePolicy_AlwaysDenyMergedIntoNft(t *testing.T) {
+	deny, err := policy.ParseValidatedEgressRule(policy.ActionDeny, "9.9.9.9")
+	require.NoError(t, err)
+	proxy := &stubProxy{}
+	nft := &stubNft{}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft", alwaysDeny: []policy.EgressRule{deny}}
+
+	body := `{"defaultAction":"deny","egress":[{"action":"allow","target":"9.9.9.9"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/policy", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	srv.handlePolicy(w, req)
+
+	resp := w.Result()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "expected 200 OK")
+	require.NotNil(t, nft.applied, "expected nft applied")
+	_, _, denyV4, _ := nft.applied.StaticIPSets()
+	require.Contains(t, denyV4, "9.9.9.9", "always deny must appear in nft static deny set")
+	require.Len(t, proxy.updated.Egress, 1, "persisted/user policy must not include always rules")
+	require.Equal(t, "9.9.9.9", proxy.updated.Egress[0].Target)
 }
 
 func TestHandlePolicy_AppliesNftAndUpdatesProxy(t *testing.T) {
@@ -163,4 +187,65 @@ func TestHandlePatch_DomainCaseOverride(t *testing.T) {
 	require.Len(t, proxy.updated.Egress, 1, "expected deduped rule count 1")
 	require.Equal(t, policy.ActionAllow, proxy.updated.Egress[0].Action, "expected allow action")
 	require.Equal(t, "example.com", proxy.updated.Egress[0].Target, "expected allow example.com to override")
+}
+
+func TestMaxEgressRulesFromEnv(t *testing.T) {
+	old := os.Getenv(constants.EnvMaxEgressRules)
+	defer func() { _ = os.Setenv(constants.EnvMaxEgressRules, old) }()
+
+	require.NoError(t, os.Unsetenv(constants.EnvMaxEgressRules))
+	require.Equal(t, constants.DefaultMaxEgressRules, maxEgressRulesFromEnv(), "empty env uses default")
+
+	require.NoError(t, os.Setenv(constants.EnvMaxEgressRules, "0"))
+	require.Equal(t, 0, maxEgressRulesFromEnv(), "0 means unlimited")
+
+	require.NoError(t, os.Setenv(constants.EnvMaxEgressRules, "100"))
+	require.Equal(t, 100, maxEgressRulesFromEnv())
+
+	require.NoError(t, os.Setenv(constants.EnvMaxEgressRules, "not-a-number"))
+	require.Equal(t, constants.DefaultMaxEgressRules, maxEgressRulesFromEnv(), "invalid falls back to default")
+
+	require.NoError(t, os.Setenv(constants.EnvMaxEgressRules, "-1"))
+	require.Equal(t, constants.DefaultMaxEgressRules, maxEgressRulesFromEnv(), "negative falls back to default")
+}
+
+func TestHandlePatch_RejectsWhenOverMaxEgressRules(t *testing.T) {
+	initial := &policy.NetworkPolicy{
+		DefaultAction: policy.ActionDeny,
+		Egress: []policy.EgressRule{
+			{Action: policy.ActionAllow, Target: "a.example.com"},
+			{Action: policy.ActionAllow, Target: "b.example.com"},
+		},
+	}
+	proxy := &stubProxy{updated: initial}
+	nft := &stubNft{}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft", maxEgressRules: 2}
+
+	body := `[{"action":"allow","target":"c.example.com"}]`
+	req := httptest.NewRequest(http.MethodPatch, "/policy", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	srv.handlePolicy(w, req)
+
+	resp := w.Result()
+	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode, "expected 400 when merged egress exceeds max")
+	require.Equal(t, 0, nft.calls, "nft should not apply on rejection")
+	require.Len(t, proxy.updated.Egress, 2, "policy should be unchanged")
+}
+
+func TestHandlePost_RejectsWhenOverMaxEgressRules(t *testing.T) {
+	proxy := &stubProxy{}
+	nft := &stubNft{}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft", maxEgressRules: 1}
+
+	body := `{"defaultAction":"deny","egress":[{"action":"allow","target":"1.1.1.1"},{"action":"allow","target":"8.8.8.8"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/policy", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	srv.handlePolicy(w, req)
+
+	resp := w.Result()
+	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode, "expected 400")
+	require.Nil(t, proxy.updated, "policy should not update")
+	require.Equal(t, 0, nft.calls, "nft should not apply")
 }

@@ -215,6 +215,55 @@ sandboxes.getSandboxInfos().forEach(info -> {
 // manager.close();
 ```
 
+### 6. Sandbox Pool (Client-Side)
+
+Use `SandboxPool` to keep an idle buffer of ready sandboxes and reduce acquire latency.
+
+> ⚠ Experimental: `SandboxPool` is still evolving based on production feedback and may introduce breaking changes in future releases.
+
+```java
+import com.alibaba.opensandbox.sandbox.pool.SandboxPool;
+import com.alibaba.opensandbox.sandbox.domain.pool.PoolCreationSpec;
+import com.alibaba.opensandbox.sandbox.domain.pool.AcquirePolicy;
+import com.alibaba.opensandbox.sandbox.infrastructure.pool.InMemoryPoolStateStore;
+
+SandboxPool pool = SandboxPool.builder()
+    .poolName("demo-pool")
+    .ownerId("worker-1")
+    .maxIdle(3)
+    .warmupReadyTimeout(Duration.ofSeconds(45))
+    .stateStore(new InMemoryPoolStateStore()) // single-node store
+    .connectionConfig(config)
+    .creationSpec(
+        PoolCreationSpec.builder()
+            .image("ubuntu:22.04")
+            .entrypoint(java.util.List.of("tail", "-f", "/dev/null"))
+            .extension("storage.id", "dataset-001")
+            .build()
+    )
+    .build();
+
+pool.start();
+Sandbox sb = pool.acquire(Duration.ofMinutes(10), AcquirePolicy.FAIL_FAST);
+try {
+    sb.commands().run("echo pool-ok");
+} finally {
+    sb.kill();
+    sb.close();
+}
+pool.shutdown(true);
+```
+
+Pool lifecycle semantics:
+- `acquire()` is only allowed when pool state is `RUNNING`.
+- In `DRAINING` / `STOPPED`, `acquire()` throws `PoolNotRunningException`.
+- `ownerId` is the lock owner identity (node/process id), not the pool identifier.
+  If omitted, SDK auto-generates a UUID-based default.
+- Use `warmupSandboxPreparer(...)` if you need to prepare a sandbox after warmup readiness succeeds and before it is put into the idle pool.
+
+
+> For distributed deployment, your application must provide a `PoolStateStore` implementation and ensure it satisfies distributed semantics (atomic idle take, idempotent put/remove, lock ownership/renewal, pool isolation, and consistent counters).
+
 ## Configuration
 
 ### 1. Connection Configuration
@@ -268,6 +317,7 @@ The `Sandbox.builder()` allows configuring the sandbox environment.
 | `resource`     | CPU and memory limits                    | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`          | Environment variables                    | Empty                           |
 | `metadata`     | Custom metadata tags                     | Empty                           |
+| `extensions`   | Opaque server-side extension parameters  | Empty                           |
 | `networkPolicy` | Optional outbound network policy (egress) | -                             |
 | `readyTimeout` | Max time to wait for sandbox to be ready | 30 seconds                      |
 
@@ -288,6 +338,7 @@ Sandbox sandbox = Sandbox.builder()
     })
     .env("PYTHONPATH", "/app")
     .metadata("project", "demo")
+    .extension("storage.id", "dataset-001")
     .networkPolicy(
         NetworkPolicy.builder()
             .defaultAction(NetworkPolicy.DefaultAction.DENY)

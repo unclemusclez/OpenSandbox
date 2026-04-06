@@ -27,7 +27,7 @@ import (
 )
 
 func TestProxyUpdatePolicy(t *testing.T) {
-	proxy, err := New(nil, "127.0.0.1:15353")
+	proxy, err := New(nil, "127.0.0.1:15353", nil, nil)
 	require.NoError(t, err, "init proxy")
 
 	require.NotNil(t, proxy.CurrentPolicy(), "expected default deny policy (non-nil)")
@@ -45,20 +45,15 @@ func TestProxyUpdatePolicy(t *testing.T) {
 	require.Equal(t, policy.ActionDeny, proxy.CurrentPolicy().Evaluate("example.com."), "expected default deny after clearing")
 }
 
-func TestLoadPolicyFromEnvVar(t *testing.T) {
-	const envName = "TEST_EGRESS_POLICY"
-	t.Setenv(envName, `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
-
-	pol, err := LoadPolicyFromEnvVar(envName)
-	require.NoError(t, err, "unexpected error")
-	require.NotNil(t, pol, "expected parsed policy")
-	require.Equal(t, policy.ActionAllow, pol.Evaluate("example.com."), "expected parsed policy to allow example.com")
-
-	t.Setenv(envName, "")
-	pol, err = LoadPolicyFromEnvVar(envName)
-	require.NoError(t, err, "unexpected error on empty env")
-	require.NotNil(t, pol, "expected default deny policy when env is empty")
-	require.Equal(t, policy.ActionDeny, pol.DefaultAction, "expected default deny when env is empty")
+func TestProxyAlwaysOverlayPrecedence(t *testing.T) {
+	deny, err := policy.ParseValidatedEgressRule(policy.ActionDeny, "nope.test")
+	require.NoError(t, err)
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"nope.test"}]}`)
+	require.NoError(t, err)
+	proxy, err := New(pol, "127.0.0.1:15353", []policy.EgressRule{deny}, nil)
+	require.NoError(t, err)
+	require.Equal(t, policy.ActionAllow, proxy.CurrentPolicy().Evaluate("nope.test."), "user policy without overlay")
+	require.Equal(t, policy.ActionDeny, proxy.effectivePolicy.Evaluate("nope.test."), "effective policy includes always deny")
 }
 
 func TestExtractResolvedIPs(t *testing.T) {
@@ -88,7 +83,7 @@ func TestExtractResolvedIPs_EmptyOrNil(t *testing.T) {
 }
 
 func TestSetOnResolved(t *testing.T) {
-	proxy, err := New(policy.DefaultDenyPolicy(), "")
+	proxy, err := New(policy.DefaultDenyPolicy(), "", nil, nil)
 	require.NoError(t, err)
 	var called bool
 	var capturedDomain string
@@ -107,7 +102,7 @@ func TestSetOnResolved(t *testing.T) {
 }
 
 func TestMaybeNotifyResolved_CallsCallbackWhenAOrAAAA(t *testing.T) {
-	proxy, err := New(policy.DefaultDenyPolicy(), "")
+	proxy, err := New(policy.DefaultDenyPolicy(), "", nil, nil)
 	require.NoError(t, err)
 	ch := make(chan struct {
 		domain string
@@ -137,7 +132,7 @@ func TestMaybeNotifyResolved_CallsCallbackWhenAOrAAAA(t *testing.T) {
 }
 
 func TestMaybeNotifyResolved_NoCallWhenOnResolvedNil(t *testing.T) {
-	proxy, err := New(policy.DefaultDenyPolicy(), "")
+	proxy, err := New(policy.DefaultDenyPolicy(), "", nil, nil)
 	require.NoError(t, err)
 	msg := new(dns.Msg)
 	msg.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "x.", Ttl: 60}, A: net.ParseIP("10.0.0.1")}}
@@ -146,7 +141,7 @@ func TestMaybeNotifyResolved_NoCallWhenOnResolvedNil(t *testing.T) {
 }
 
 func TestMaybeNotifyResolved_NoCallWhenNoAOrAAAA(t *testing.T) {
-	proxy, err := New(policy.DefaultDenyPolicy(), "")
+	proxy, err := New(policy.DefaultDenyPolicy(), "", nil, nil)
 	require.NoError(t, err)
 	ch := make(chan struct {
 		domain string

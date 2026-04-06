@@ -73,6 +73,10 @@ func main() {
 	var logMaxAge int
 	var logCompress bool
 
+	// Kubernetes client rate limiter options
+	var kubeClientQPS float64
+	var kubeClientBurst int
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -98,6 +102,8 @@ func main() {
 	flag.IntVar(&logMaxBackups, "log-max-backups", 10, "Maximum number of old log files to retain")
 	flag.IntVar(&logMaxAge, "log-max-age", 30, "Maximum number of days to retain old log files")
 	flag.BoolVar(&logCompress, "log-compress", true, "Compress determines if the rotated log files should be compressed using gzip")
+	flag.Float64Var(&kubeClientQPS, "kube-client-qps", 100, "QPS for Kubernetes client rate limiter.")
+	flag.IntVar(&kubeClientBurst, "kube-client-burst", 200, "Burst for Kubernetes client rate limiter.")
 
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -208,7 +214,16 @@ func main() {
 		})
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	config := ctrl.GetConfigOrDie()
+	// Set client rate limiter if specified
+	if kubeClientQPS > 0 {
+		config.QPS = float32(kubeClientQPS)
+	}
+	if kubeClientBurst > 0 {
+		config.Burst = kubeClientBurst
+	}
+
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,

@@ -15,16 +15,21 @@
 import textwrap
 
 import pytest
+from pydantic import ValidationError
 
-from src import config as config_module
-from src.config import (
+from opensandbox_server import config as config_module
+from opensandbox_server.config import (
     AppConfig,
+    RenewIntentRedisConfig,
+    EGRESS_MODE_DNS,
+    EGRESS_MODE_DNS_NFT,
+    EgressConfig,
     GatewayConfig,
     GatewayRouteModeConfig,
     IngressConfig,
     RuntimeConfig,
     ServerConfig,
-    StorageConfig
+    StorageConfig,
 )
 
 
@@ -84,6 +89,89 @@ def test_docker_runtime_disallows_kubernetes_block():
 def test_server_config_defaults_include_max_sandbox_timeout():
     server_cfg = ServerConfig()
     assert server_cfg.max_sandbox_timeout_seconds is None
+
+
+def test_renew_intent_defaults():
+    cfg = AppConfig(runtime=RuntimeConfig(type="docker", execd_image="opensandbox/execd:latest"))
+    ar = cfg.renew_intent
+    assert ar.enabled is False
+    assert ar.min_interval_seconds == 60
+    assert ar.redis.enabled is False
+    assert ar.redis.dsn is None
+    assert ar.redis.queue_key == "opensandbox:renew:intent"
+    assert ar.redis.consumer_concurrency == 8
+
+
+def test_renew_intent_redis_requires_dsn_when_enabled():
+    with pytest.raises(ValidationError):
+        RenewIntentRedisConfig(enabled=True, dsn=None)
+    with pytest.raises(ValidationError):
+        RenewIntentRedisConfig(enabled=True, dsn="   ")
+    cfg = RenewIntentRedisConfig(enabled=True, dsn="redis://127.0.0.1:6379/0")
+    assert cfg.dsn == "redis://127.0.0.1:6379/0"
+
+
+def test_load_config_renew_intent_dotted_redis_keys(tmp_path, monkeypatch):
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [renew_intent]
+        enabled = true
+        min_interval_seconds = 30
+        redis.enabled = true
+        redis.dsn = "redis://example:6379/1"
+        redis.queue_key = "custom:renew"
+        redis.consumer_concurrency = 4
+
+        [runtime]
+        type = "docker"
+        execd_image = "opensandbox/execd:test"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    ar = loaded.renew_intent
+    assert ar.enabled is True
+    assert ar.min_interval_seconds == 30
+    assert ar.redis.enabled is True
+    assert ar.redis.dsn == "redis://example:6379/1"
+    assert ar.redis.queue_key == "custom:renew"
+    assert ar.redis.consumer_concurrency == 4
+
+
+def test_load_config_renew_intent_legacy_redis_subtable(tmp_path, monkeypatch):
+    """[renew_intent.redis] remains accepted (same parsed shape as dotted keys)."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [renew_intent]
+        enabled = true
+
+        [renew_intent.redis]
+        enabled = true
+        dsn = "redis://legacy:6379/0"
+
+        [runtime]
+        type = "docker"
+        execd_image = "opensandbox/execd:test"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.renew_intent.redis.enabled is True
+    assert loaded.renew_intent.redis.dsn == "redis://legacy:6379/0"
 
 
 def test_kubernetes_runtime_fills_missing_block():
@@ -601,3 +689,9 @@ def test_kubernetes_runtime_with_firecracker_is_valid():
     assert cfg.secure_runtime is not None
     assert cfg.secure_runtime.type == "firecracker"
     assert cfg.secure_runtime.k8s_runtime_class == "kata-fc"
+
+
+def test_egress_config_mode_literal():
+    assert EgressConfig(image="opensandbox/egress:v1").mode == EGRESS_MODE_DNS
+    cfg = EgressConfig(image="opensandbox/egress:v1", mode=EGRESS_MODE_DNS_NFT)
+    assert cfg.mode == EGRESS_MODE_DNS_NFT

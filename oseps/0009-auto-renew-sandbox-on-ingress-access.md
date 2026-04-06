@@ -3,8 +3,8 @@ title: Auto-Renew Sandbox on Ingress Access
 authors:
   - "@Pangjiping"
 creation-date: 2026-03-15
-last-updated: 2026-03-19
-status: implementing
+last-updated: 2026-03-23
+status: implemented
 ---
 
 # OSEP-0009: Auto-Renew Sandbox on Ingress Access
@@ -74,7 +74,7 @@ An access-driven renewal mechanism is needed, but it must be strongly rate-contr
 - The implementation must work with existing lifecycle API and runtime providers.
 - Reverse proxy traffic must be the only trigger source for this proposal.
 - Auto-renew must be disabled unless all three conditions are met:
-  - server supports and enables auto-renew-on-access,
+  - server supports and enables `renew_intent`,
   - ingress supports and enables renew-intent signaling (for ingress mode),
   - sandbox creation request explicitly opts in via `extensions`.
 - Renewal requests must be bounded by deduplication and throttling controls.
@@ -88,7 +88,7 @@ Add an "access renew controller" that converts proxy access signals into control
 
 - In server proxy mode, the server path handling proxied traffic submits local renew intents and performs internal renewal calls.
 - In ingress gateway mode, ingress publishes renew intents into Redis; OpenSandbox server consumes and executes controlled renewals.
-- Both modes share the same renewal gate logic: opt-in check, eligibility window, cooldown, and per-sandbox in-flight deduplication.
+- Both modes share the same renewal gate logic: opt-in check, sandbox state, server-side validity for each renew attempt, cooldown, and per-sandbox in-flight deduplication.
 
 At a high level, access traffic indicates activity, but only eligible events produce actual `renew-expiration` operations.
 
@@ -103,10 +103,10 @@ At a high level, access traffic indicates activity, but only eligible events pro
 
 | Risk | Mitigation |
 | --- | --- |
-| Renewal storms under high ingress QPS | Multi-stage gating: renew-window check + cooldown + in-flight dedupe |
+| Renewal storms under high ingress QPS | Multi-stage gating: validity checks + cooldown + in-flight dedupe |
 | Duplicate renewals across server replicas | Redis lock keys for distributed dedupe in ingress mode; local dedupe in server proxy path |
 | Redis backlog growth in traffic spikes | Queue TTL, bounded consumer concurrency, and drop-on-overload policy |
-| False negatives (active sandbox not renewed) | Configurable renew window and cooldown; metrics/alerts for missed renew opportunities |
+| False negatives (active sandbox not renewed) | Server-side eligibility rules and cooldown; metrics/alerts for missed renew opportunities |
 | Added operational complexity | Feature flag rollout, default-off mode, and explicit docs/runbooks |
 
 ## Design Details
@@ -133,9 +133,9 @@ Explicitly unsupported:
 This feature uses explicit "three-party handshake" activation.
 
 1. **Server-side capability switch**
-   - `server.auto_renew_on_access.enabled = true` must be set (stored under `ServerConfig`).
+   - `renew_intent.enabled = true` must be set (top-level TOML section `[renew_intent]`, model field on root `AppConfig`).
 2. **Ingress-side capability switch** (ingress mode only)
-   - ingress must be configured to publish renew-intents (`server.auto_renew_on_access.redis.enabled = true` and ingress integration enabled).
+   - ingress must be configured to publish renew-intents (`renew_intent.redis.enabled = true` and ingress integration enabled).
 3. **Sandbox-level opt-in and duration**
    - sandbox must declare in `CreateSandboxRequest.extensions` how long each automatic renewal extends expiration (see below). Presence of a valid value opts the sandbox in.
 
@@ -143,23 +143,23 @@ If any condition is missing, access events are ignored for renewal.
 
 Given current API schema (`extensions: Dict[str, str]`), this OSEP proposes:
 
-- `extensions["access.renew.extend.seconds"]` = positive integer string (e.g. `"1800"`)
+- `extensions["access.renew.extend.seconds"]` = decimal integer **string** in the inclusive range **300–86400** seconds (**5 minutes** to **24 hours**), e.g. `"1800"`.
 
 **Meaning:** When auto-renew on access is triggered for this sandbox, each renewal extends expiration by this many seconds. The key thus both opts the sandbox in and defines the per-renewal extension duration.
 
 **Behavior rules:**
 
-- Missing key or invalid value (non-positive integer string) means no auto-renew on access for that sandbox.
-- Valid value (e.g. `"1800"`) enables auto-renew subject to policy gating; each successful renewal uses `new_expires_at = now + (value of access.renew.extend.seconds)`.
-- Invalid values are rejected at sandbox creation time with 4xx validation error.
+- Missing key means no renew-on-access for that sandbox.
+- If the key is present, the value must parse as an integer in **300–86400**; otherwise the create request fails with **400** (validated in the HTTP API layer via `validate_extensions` in `src/extensions/validation.py` before the runtime service runs).
+- Valid value enables auto-renew subject to policy gating; each successful renewal uses `new_expires_at = now + (value of access.renew.extend.seconds)`.
 
 ### Control Strategy to Prevent Renewal Storms
 
 Both modes share the same strict control policy. An access event triggers renewal only when all checks pass:
 
-1. **Opt-in check**: sandbox has a valid positive `access.renew.extend.seconds` in extensions.
+1. **Opt-in check**: sandbox has `access.renew.extend.seconds` in extensions within **300–86400** (validated at creation).
 2. **Sandbox state check**: sandbox must be `Running`.
-3. **Renew window check**: remaining TTL must be below `before_expiration_seconds`.
+3. **Validity check**: server decides whether the renewal attempt should proceed (e.g. `new_expires_at` meaningfully extends current expiration, lifecycle rules). There is **no** separate configurable “remaining TTL must be below N seconds” knob in server config.
 4. **Cooldown check**: no successful renewal for this sandbox within `min_interval_seconds`.
 5. **In-flight dedupe**: at most one renewal task per sandbox at a time.
 
@@ -167,7 +167,7 @@ If any check fails, the event is acknowledged and dropped without a renewal call
 
 Renew target time:
 
-- `new_expires_at = now + (value of extensions["access.renew.extend.seconds"])`; server may enforce a cap or default.
+- `new_expires_at = now + (value of extensions["access.renew.extend.seconds"])`; the extension duration is taken only from the sandbox `extensions` (no server-side override or default for this value).
 - must also satisfy `new_expires_at > current_expires_at` before calling renew API
 
 This guarantees bounded renewal frequency even for very hot sandboxes.
@@ -270,46 +270,44 @@ Producer (ingress):
 Consumer (server):
 
 - One or more workers block with `BRPOP opensandbox:renew:intent <timeout>`.
-- On pop: parse payload; if `now - observed_at > event_ttl_seconds`, drop and continue.
-- Acquire lock: `SET opensandbox:renew:lock:{sandbox_id} <value> NX EX lock_ttl_seconds`.
-- If lock acquired: run gate checks (opt-in, state, window, cooldown) and maybe renew; then lock expires by TTL.
+- On pop: parse payload; if the intent is older than a short implementation-defined max age (vs `observed_at`), drop and continue.
+- Acquire lock: `SET opensandbox:renew:lock:{sandbox_id} <value> NX EX <ttl>` using a short implementation-defined lock TTL.
+- If lock acquired: run gate checks (opt-in, state, validity, cooldown) and maybe renew; then lock expires by TTL.
 - If lock not acquired: treat as in-flight dedupe, drop.
 - No ack or requeue: if the worker crashes after pop, that intent is lost (best-effort).
 
 Notes:
 
-- Lock TTL must be short and greater than the renew critical section.
+- Lock TTL and intent staleness thresholds are fixed in code (not Redis config); lock TTL must be short and greater than the renew critical section.
 - Implementations must use Redis List; this LPUSH/BRPOP + lock flow is the only specified processing model.
 
 ### Configuration
 
-Use `server` configuration namespace; no independent top-level config block is required:
+Use the root config file: lifecycle API settings stay under `[server]`; renew-on-access is a **separate top-level section** `[renew_intent]` (not nested under `[server]`), alongside `[runtime]`, `[docker]`, etc.
 
 ```toml
 [server]
-auto_renew_on_access.enabled = false
-auto_renew_on_access.before_expiration_seconds = 300
-auto_renew_on_access.extension_seconds = 1800
-auto_renew_on_access.min_interval_seconds = 60
+# ... host, port, etc.
 
-# auto-detected by request path:
-# - server-proxy path uses local trigger
-# - ingress path uses redis trigger
+# Auto-detected by request path:
+# - server-proxy path uses local trigger (no Redis required)
+# - ingress path uses Redis consumer when renew_intent.redis is enabled
 
-auto_renew_on_access.redis.enabled = false
-auto_renew_on_access.redis.url = "redis://127.0.0.1:6379/0"
-auto_renew_on_access.redis.queue_key = "opensandbox:renew:intent"
-auto_renew_on_access.redis.lock_ttl_seconds = 10
-auto_renew_on_access.redis.event_ttl_seconds = 30
-auto_renew_on_access.redis.consumer_concurrency = 8
+[renew_intent]
+enabled = false
+min_interval_seconds = 60
+redis.enabled = false
+redis.dsn = "redis://127.0.0.1:6379/0"
+redis.queue_key = "opensandbox:renew:intent"
+redis.consumer_concurrency = 8
 ```
 
 Configuration rules:
 
-- `server.auto_renew_on_access.enabled=false` means feature fully disabled.
+- `renew_intent.enabled=false` means feature fully disabled.
 - Ingress path renewal requires Redis block enabled and reachable on the server; the **ingress component** uses its own config (e.g. CLI flags: `--renew-intent-enabled`, `--renew-intent-redis-dsn`, `--renew-intent-queue-key`, `--renew-intent-queue-max-len`, `--renew-intent-min-interval`) to connect to Redis and publish intents. Queue key and default list name should match what the server consumer expects (e.g. `opensandbox:renew:intent`).
 - Server proxy path can run without Redis.
-- Feature is applied per sandbox only when `extensions["access.renew.extend.seconds"]` is present and a valid positive integer string.
+- Per-renewal extension duration is **not** a server setting: it comes only from sandbox `extensions["access.renew.extend.seconds"]` (set at creation to **300–86400** seconds or creation fails with **400**). Omit the key to disable renew-on-access for that sandbox.
 - Docker runtime direct mode remains unsupported regardless of this config.
 
 Create request example:
@@ -329,7 +327,7 @@ Create request example:
 
 - **Unit Tests**
   - Extension validation for auto-renew opt-in keys and values
-  - Renew eligibility function (window/cooldown/state checks)
+  - Renew eligibility function (validity/cooldown/state checks)
   - In-flight dedupe behavior under concurrent signals
   - Renew target time calculation and monotonicity checks
 - **Integration Tests (Server Proxy)**
@@ -369,5 +367,5 @@ Success criteria:
   2. Enable in server proxy path for canary validation.
   3. Enable ingress + Redis path progressively.
 - Rollback:
-  - Disable `server.auto_renew_on_access.enabled` (and `server.auto_renew_on_access.redis.enabled` for ingress mode).
+  - Disable `renew_intent.enabled` (and `renew_intent.redis.enabled` for ingress mode).
   - Existing manual renewal flow remains unchanged.

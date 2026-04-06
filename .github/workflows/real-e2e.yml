@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'server/src/**'
+      - 'server/opensandbox_server/**'
       - 'components/execd/**'
       - 'components/egress/**'
       - 'sdks/code-interpreter/**'
@@ -42,6 +42,7 @@ jobs:
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           # Remove root-owned files from previous sandbox runs by mounting parent dir
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
+          docker image prune -f || true
 
       - name: Build local egress image
         run: docker build -t opensandbox/egress:local -f components/egress/Dockerfile .
@@ -62,10 +63,14 @@ jobs:
           execd_image = "opensandbox/execd:local"
           [egress]
           image = "opensandbox/egress:local"
+          mode = "dns"
           [docker]
           network_mode = "bridge"
           [storage]
           allowed_host_paths = ["/tmp/opensandbox-e2e"]
+          [renew_intent]
+          enabled = true
+          min_interval_seconds = 60
           EOF
 
           ./scripts/python-e2e.sh
@@ -87,7 +92,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
-          pkill -f "python -m src.main" || true
+          pkill -f "python -m opensandbox_server.main" || true
 
   java-e2e:
     name: Java E2E (docker bridge)
@@ -121,6 +126,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
+          docker image prune -f || true
 
       - name: Build local egress image
         run: docker build -t opensandbox/egress:local -f components/egress/Dockerfile .
@@ -144,6 +150,7 @@ jobs:
           execd_image = "opensandbox/execd:local"
           [egress]
           image = "opensandbox/egress:local"
+          mode = "dns+nft"
           [docker]
           network_mode = "bridge"
           [storage]
@@ -177,7 +184,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
-          pkill -f "python -m src.main" || true
+          pkill -f "python -m opensandbox_server.main" || true
 
   javascript-e2e:
     name: JavaScript E2E (docker bridge)
@@ -216,6 +223,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
+          docker image prune -f || true
 
       - name: Build local egress image
         run: docker build -t opensandbox/egress:local -f components/egress/Dockerfile .
@@ -269,7 +277,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
-          pkill -f "python -m src.main" || true
+          pkill -f "python -m opensandbox_server.main" || true
 
   csharp-e2e:
     name: C# E2E (docker bridge)
@@ -298,6 +306,7 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
+          docker image prune -f || true
 
       - name: Build local egress image
         run: docker build -t opensandbox/egress:local -f components/egress/Dockerfile .
@@ -350,4 +359,4 @@ jobs:
         run: |
           docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
-          pkill -f "python -m src.main" || true
+          pkill -f "python -m opensandbox_server.main" || true
