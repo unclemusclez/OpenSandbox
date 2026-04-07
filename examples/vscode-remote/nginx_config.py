@@ -80,10 +80,9 @@ class NginxConfigGenerator:
     ssl_certificate_key {key_path};
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
 
     location {location_path} {{
-        proxy_pass http://{upstream_host}:{upstream_port};
+        proxy_pass http://{upstream_host}:{upstream_port}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -91,6 +90,12 @@ class NginxConfigGenerator:
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_redirect off;
+        add_header Service-Worker-Allowed /;
+        proxy_ssl_verify off;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
     }}
 }}
 """
@@ -128,19 +133,19 @@ class NginxConfigGenerator:
         use_https: bool = False,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
-        random_string: Optional[str] = None,
+        location_path: Optional[str] = None,
     ) -> str:
         """
         Generate nginx configuration file.
 
         Args:
-            server_name: Server name (domain or subdomain)
+            server_name: Server name (domain or subdomain or IP)
             upstream_host: Host to proxy to (e.g., 127.0.0.1)
             upstream_port: Port to proxy to
             use_https: Whether to use HTTPS
             cert_path: Path to SSL certificate (required if use_https)
             key_path: Path to SSL key (required if use_https)
-            random_string: Random string for URL path (e.g., "x7gx9sjd")
+            location_path: URI path for location block (e.g., '/8443/' or '/abc12345/')
 
         Returns:
             Path to generated configuration file
@@ -164,8 +169,8 @@ class NginxConfigGenerator:
         # Select template
         template = self.HTTPS_TEMPLATE if use_https else self.HTTP_TEMPLATE
 
-        # Determine location path
-        location_path = f"/{random_string}/" if random_string else "/"
+        # Use provided location_path or default to root
+        resolved_location = location_path or "/"
 
         # Generate configuration content
         config_content = template.format(
@@ -174,7 +179,7 @@ class NginxConfigGenerator:
             upstream_port=upstream_port,
             cert_path=cert_path or "",
             key_path=key_path or "",
-            location_path=location_path,
+            location_path=resolved_location,
         )
 
         # Write configuration file
@@ -365,10 +370,10 @@ def main():
         help="Path to SSL key (required with --https)",
     )
     parser.add_argument(
-        "--random-string",
+        "--location-path",
         type=str,
         default=None,
-        help="Random string for URL path (e.g., 'x7gx9sjd')",
+        help="URI path for location block (e.g., '/8443/' or '/abc12345/')",
     )
     parser.add_argument(
         "--enable",
@@ -409,7 +414,7 @@ def main():
         use_https=args.https,
         cert_path=args.cert_path,
         key_path=args.key_path,
-        random_string=args.random_string,
+        location_path=args.location_path,
     )
 
     # Enable configuration if requested

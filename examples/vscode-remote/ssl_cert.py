@@ -16,410 +16,229 @@
 """
 SSL Certificate Generator for VS Code Remote Example
 
-This module provides functionality to generate self-signed SSL certificates
-for development and testing purposes. It uses Python's cryptography library
-to create certificates with proper Subject Alternative Names (SAN).
+Uses openssl (no pip dependencies) to generate self-signed certificates.
+Each sandbox instance gets its own cert keyed by port-based URI path.
 
 Usage:
-    from examples.vscode_remote.ssl_cert import SSLCertificateGenerator
+    from ssl_cert import SSLCertificateGenerator
 
-    generator = SSLCertificateGenerator()
-    cert_path, key_path = generator.generate_self_signed_cert(
-        server_name="abc12345.localhost",
-        output_dir="/etc/nginx/ssl",
-    )
-    subdomain = generator.generate_random_subdomain()
+    gen = SSLCertificateGenerator(output_dir="/etc/nginx/ssl")
+    cert, key = gen.generate_cert_for_port(port=8443)
+    # -> (/etc/nginx/ssl/port-8443.crt, /etc/nginx/ssl/port-8443.key)
 """
 
 import os
 import random
+import shutil
 import string
-from datetime import datetime, timedelta
+import subprocess
 from pathlib import Path
 from typing import Optional
 
-try:
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID, ExtensionOID
-except ImportError:
-    raise ImportError(
-        "cryptography library is required. " "Install with: pip install cryptography"
-    )
-
 
 class SSLCertificateGenerator:
-    """
-    Generate self-signed SSL certificates for development.
+    """Generate self-signed SSL certs via openssl CLI."""
 
-    This class handles:
-    - Generating RSA private keys
-    - Creating X.509 certificates
-    - Adding Subject Alternative Names (SAN)
-    - Saving certificates and keys to files
-    - Generating random subdomain names
-    """
-
-    # Certificate validity period (default: 1 year)
     CERT_VALIDITY_DAYS = 365
-
-    # RSA key size (default: 2048 bits)
     KEY_SIZE = 2048
 
-    def __init__(
-        self,
-        output_dir: str = "/etc/nginx/ssl",
-        key_size: int = 2048,
-        cert_validity_days: int = 365,
-    ):
-        """
-        Initialize SSL certificate generator.
-
-        Args:
-            output_dir: Directory to save certificate files
-            key_size: RSA key size in bits (default: 2048)
-            cert_validity_days: Certificate validity in days (default: 365)
-        """
+    def __init__(self, output_dir: str = "/etc/nginx/ssl"):
         self.output_dir = Path(output_dir)
-        self.key_size = key_size
-        self.cert_validity_days = cert_validity_days
-
-        # Ensure output directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate_self_signed_cert(
+    def generate_cert_for_port(
         self,
-        server_name: str,
-        output_dir: Optional[str] = None,
+        port: int,
+        server_ip: Optional[str] = None,
     ) -> tuple[str, str]:
-        """
-        Generate self-signed certificate.
+        """Generate a self-signed cert for a specific port (used as URI path).
 
         Args:
-            server_name: Server name (domain or subdomain)
-            output_dir: Directory to save certificate files (default: from __init__)
+            port: The code-server port number; becomes the SAN URI e.g. /8443/
+            server_ip: Optional IP address to add as SAN IP (resolves SW SSL errors)
 
         Returns:
             Tuple of (cert_path, key_path)
-
-        Raises:
-            RuntimeError: If certificate generation fails
         """
-        # Use provided output_dir or default
-        cert_dir = Path(output_dir) if output_dir else self.output_dir
-        cert_dir.mkdir(parents=True, exist_ok=True)
+        name = f"port-{port}"
+        cert_file = self.output_dir / f"{name}.crt"
+        key_file = self.output_dir / f"{name}.key"
 
-        print(f"[SSL] Generating self-signed certificate for: {server_name}")
+        if cert_file.exists() and key_file.exists():
+            print(f"[SSL] Reusing existing cert: {cert_file}")
+            return str(cert_file), str(key_file)
+
+        print(f"[SSL] Generating cert for port {port}...")
+
+        subj = f"/CN=localhost/port-{port}"
+
+        san_parts = [f"IP:{server_ip}"] if server_ip else []
+        san_parts.append(f"DNS:localhost")
+        san_parts.append(f"DNS:127.0.0.1")
+        san_str = ",".join(san_parts)
+
+        conf_content = f"""[req]
+default_bits = {self.KEY_SIZE}
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = localhost/port-{port}
+
+[v3_req]
+subjectAltName = {san_str}
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+"""
+
+        conf_file = self.output_dir / f"{name}.conf"
+        conf_file.write_text(conf_content)
 
         try:
-            # Generate private key
-            private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=self.key_size,
-            )
-
-            # Create certificate subject
-            subject = x509.Name(
+            subprocess.run(
                 [
-                    x509.NameAttribute(
-                        NameOID.COMMON_NAME,
-                        server_name,
-                    ),
-                ]
+                    "openssl", "req", "-x509", "-nodes",
+                    "-days", str(self.CERT_VALIDITY_DAYS),
+                    "-newkey", f"rsa:{self.KEY_SIZE}",
+                    "-keyout", str(key_file),
+                    "-out", str(cert_file),
+                    "-config", str(conf_file),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
             )
+            os.chmod(key_file, 0o600)
+            print(f"[SSL] Certificate saved: {cert_file}")
+            print(f"[SSL] Key saved: {key_file}")
+            return str(cert_file), str(key_file)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to generate SSL cert for port {port}: {e.stderr}"
+            ) from e
+        finally:
+            conf_file.unlink(missing_ok=True)
 
-            # Create certificate builder
-            cert_builder = x509.CertificateBuilder()
-            cert_builder = cert_builder.subject_name(subject)
-            cert_builder = cert_builder.issuer_name(subject)
-            cert_builder = cert_builder.public_key(
-                private_key.public_key(),
-            )
-            cert_builder = cert_builder.serial_number(
-                x509.random_serial_number(),
-            )
-            cert_builder = cert_builder.not_valid_before(
-                datetime.utcnow(),
-            )
-            cert_builder = cert_builder.not_valid_after(
-                datetime.utcnow() + timedelta(days=self.cert_validity_days),
-            )
-
-            # Add Subject Alternative Names (SAN)
-            san_list = [x509.DNSName(server_name)]
-
-            # Add IP address if server_name is an IP
-            try:
-                # Try to parse as IP address
-                from ipaddress import ip_address
-
-                ip = ip_address(server_name)
-                san_list.append(x509.IPAddress(ip))
-            except ValueError:
-                # Not an IP address, skip
-                pass
-
-            # Add SAN extension
-            cert_builder = cert_builder.add_extension(
-                x509.SubjectAlternativeName(san_list),
-                critical=False,
-            )
-
-            # Add basic constraints
-            cert_builder = cert_builder.add_extension(
-                x509.BasicConstraints(ca=False, path_length=None),
-                critical=True,
-            )
-
-            # Add key usage
-            cert_builder = cert_builder.add_extension(
-                x509.KeyUsage(
-                    digital_signature=True,
-                    key_encipherment=True,
-                    key_cert_sign=False,
-                    key_agreement=False,
-                    content_commitment=False,
-                    data_encipherment=False,
-                    crl_sign=False,
-                    encipher_only=False,
-                    decipher_only=False,
-                ),
-                critical=True,
-            )
-
-            # Add extended key usage
-            cert_builder = cert_builder.add_extension(
-                x509.ExtendedKeyUsage(
-                    [
-                        x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
-                        x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
-                    ]
-                ),
-                critical=False,
-            )
-
-            # Sign certificate
-            certificate = cert_builder.sign(
-                private_key,
-                hashes.SHA256(),
-            )
-
-            # Save private key
-            key_filename = f"{server_name.replace('.', '-')}.key"
-            key_path = cert_dir / key_filename
-
-            with open(key_path, "wb") as f:
-                f.write(
-                    private_key.private_bytes(
-                        encoding=serialization.Encoding.PEM,
-                        format=serialization.PrivateFormat.TraditionalOpenSSL,
-                        encryption_algorithm=serialization.NoEncryption(),
-                    )
-                )
-
-            # Save certificate
-            cert_filename = f"{server_name.replace('.', '-')}.crt"
-            cert_path = cert_dir / cert_filename
-
-            with open(cert_path, "wb") as f:
-                f.write(
-                    certificate.public_bytes(
-                        encoding=serialization.Encoding.PEM,
-                    )
-                )
-
-            # Set restrictive permissions on key file
-            os.chmod(key_path, 0o600)
-
-            print(f"[SSL] Certificate saved: {cert_path}")
-            print(f"[SSL] Key saved: {key_path}")
-
-            return str(cert_path), str(key_path)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to generate SSL certificate: {e}") from e
-
-    def generate_random_subdomain(
+    def generate_cert_for_subdomain(
         self,
+        subdomain: str,
+        server_ip: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Generate a cert for a random subdomain (nginx host-mode routing).
+
+        Args:
+            subdomain: Subdomain name e.g. 'abc12345.localhost'
+            server_ip: Optional IP to add as SAN
+
+        Returns:
+            Tuple of (cert_path, key_path)
+        """
+        name = subdomain.replace(".", "-")
+        cert_file = self.output_dir / f"{name}.crt"
+        key_file = self.output_dir / f"{name}.key"
+
+        if cert_file.exists() and key_file.exists():
+            print(f"[SSL] Reusing existing cert: {cert_file}")
+            return str(cert_file), str(key_file)
+
+        print(f"[SSL] Generating cert for subdomain: {subdomain}")
+
+        san_parts = [f"DNS:{subdomain}", f"DNS:localhost", f"DNS:127.0.0.1"]
+        if server_ip:
+            san_parts.insert(0, f"IP:{server_ip}")
+        san_str = ",".join(san_parts)
+
+        conf_content = f"""[req]
+default_bits = {self.KEY_SIZE}
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = {subdomain}
+
+[v3_req]
+subjectAltName = {san_str}
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+"""
+
+        conf_file = self.output_dir / f"{name}.conf"
+        conf_file.write_text(conf_content)
+
+        try:
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-nodes",
+                    "-days", str(self.CERT_VALIDITY_DAYS),
+                    "-newkey", f"rsa:{self.KEY_SIZE}",
+                    "-keyout", str(key_file),
+                    "-out", str(cert_file),
+                    "-config", str(conf_file),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            os.chmod(key_file, 0o600)
+            print(f"[SSL] Certificate saved: {cert_file}")
+            print(f"[SSL] Key saved: {key_file}")
+            return str(cert_file), str(key_file)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to generate SSL cert for {subdomain}: {e.stderr}"
+            ) from e
+        finally:
+            conf_file.unlink(missing_ok=True)
+
+    @staticmethod
+    def generate_random_subdomain(
         length: int = 8,
         base_domain: str = "localhost",
     ) -> str:
-        """
-        Generate random subdomain name.
-
-        Args:
-            length: Length of random string (default: 8)
-            base_domain: Base domain (default: localhost)
-
-        Returns:
-            Random subdomain name (e.g., "abc12345.localhost")
-        """
-        # Generate random string
+        """Generate a random subdomain name."""
         chars = string.ascii_lowercase + string.digits
-        random_str = "".join(random.choice(chars) for _ in range(length))
-
-        # Create subdomain
-        subdomain = f"{random_str}.{base_domain}"
-
+        rand = "".join(random.choice(chars) for _ in range(length))
+        subdomain = f"{rand}.{base_domain}"
         print(f"[SSL] Generated subdomain: {subdomain}")
-
         return subdomain
 
-    def cert_exists(self, server_name: str, output_dir: Optional[str] = None) -> bool:
-        """
-        Check if certificate exists for server name.
-
-        Args:
-            server_name: Server name (domain or subdomain)
-            output_dir: Directory to check (default: from __init__)
-
-        Returns:
-            True if certificate and key exist, False otherwise
-        """
-        cert_dir = Path(output_dir) if output_dir else self.output_dir
-
-        cert_filename = f"{server_name.replace('.', '-')}.crt"
-        key_filename = f"{server_name.replace('.', '-')}.key"
-
-        cert_path = cert_dir / cert_filename
-        key_path = cert_dir / key_filename
-
-        return cert_path.exists() and key_path.exists()
-
-    def delete_cert(self, server_name: str, output_dir: Optional[str] = None) -> None:
-        """
-        Delete certificate and key for server name.
-
-        Args:
-            server_name: Server name (domain or subdomain)
-            output_dir: Directory to check (default: from __init__)
-        """
-        cert_dir = Path(output_dir) if output_dir else self.output_dir
-
-        cert_filename = f"{server_name.replace('.', '-')}.crt"
-        key_filename = f"{server_name.replace('.', '-')}.key"
-
-        cert_path = cert_dir / cert_filename
-        key_path = cert_dir / key_filename
-
-        try:
-            if cert_path.exists():
-                cert_path.unlink()
-                print(f"[SSL] Deleted certificate: {cert_path}")
-
-            if key_path.exists():
-                key_path.unlink()
-                print(f"[SSL] Deleted key: {key_path}")
-        except OSError as e:
-            print(f"[SSL] Warning: Failed to delete certificate: {e}")
-
-    def cleanup_certs(
-        self, pattern: str = "*.crt", output_dir: Optional[str] = None
-    ) -> None:
-        """
-        Remove all certificates matching a pattern.
-
-        Args:
-            pattern: Glob pattern for certificate files (default: *.crt)
-            output_dir: Directory to check (default: from __init__)
-        """
-        cert_dir = Path(output_dir) if output_dir else self.output_dir
-
-        # Find all matching certificates
-        certs = list(cert_dir.glob(pattern))
-
-        if not certs:
-            print(f"[SSL] No certificates found matching pattern: {pattern}")
-            return
-
-        print(f"[SSL] Found {len(certs)} certificate(s) to clean up")
-
-        # Delete each certificate and its key
-        for cert_path in certs:
-            server_name = cert_path.stem.replace("-", ".")
-            self.delete_cert(server_name, output_dir=str(cert_dir))
+    def delete_cert(self, name: str) -> None:
+        """Delete cert and key by name (without extension)."""
+        for ext in (".crt", ".key", ".conf"):
+            p = self.output_dir / f"{name}{ext}"
+            if p.exists():
+                p.unlink()
+                print(f"[SSL] Deleted: {p}")
 
 
 def main():
-    """Main function for testing SSL certificate generator."""
+    """CLI for generating certs via openssl."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Generate self-signed SSL certificates"
-    )
-    parser.add_argument(
-        "--server-name",
-        type=str,
-        help="Server name (domain or subdomain)",
-    )
-    parser.add_argument(
-        "--random-subdomain",
-        action="store_true",
-        help="Generate random subdomain",
-    )
-    parser.add_argument(
-        "--subdomain-length",
-        type=int,
-        default=8,
-        help="Length of random subdomain (default: 8)",
-    )
-    parser.add_argument(
-        "--base-domain",
-        type=str,
-        default="localhost",
-        help="Base domain for subdomain (default: localhost)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="/etc/nginx/ssl",
-        help="Directory to save certificates (default: /etc/nginx/ssl)",
-    )
-    parser.add_argument(
-        "--key-size",
-        type=int,
-        default=2048,
-        help="RSA key size in bits (default: 2048)",
-    )
-    parser.add_argument(
-        "--validity-days",
-        type=int,
-        default=365,
-        help="Certificate validity in days (default: 365)",
-    )
-
+    parser = argparse.ArgumentParser(description="Generate self-signed SSL certs via openssl")
+    parser.add_argument("--port", type=int, help="Generate cert for a port number")
+    parser.add_argument("--subdomain", type=str, help="Generate cert for a subdomain")
+    parser.add_argument("--ip", type=str, help="Server IP address for SAN")
+    parser.add_argument("--output-dir", type=str, default="/etc/nginx/ssl")
     args = parser.parse_args()
 
-    # Create generator
-    generator = SSLCertificateGenerator(
-        output_dir=args.output_dir,
-        key_size=args.key_size,
-        cert_validity_days=args.validity_days,
-    )
+    gen = SSLCertificateGenerator(output_dir=args.output_dir)
 
-    # Generate subdomain if requested
-    if args.random_subdomain:
-        server_name = generator.generate_random_subdomain(
-            length=args.subdomain_length,
-            base_domain=args.base_domain,
-        )
-    elif args.server_name:
-        server_name = args.server_name
+    if args.port:
+        cert, key = gen.generate_cert_for_port(port=args.port, server_ip=args.ip)
+    elif args.subdomain:
+        cert, key = gen.generate_cert_for_subdomain(subdomain=args.subdomain, server_ip=args.ip)
     else:
-        parser.error("Either --server-name or --random-subdomain is required")
+        parser.error("Either --port or --subdomain is required")
 
-    # Generate certificate
-    cert_path, key_path = generator.generate_self_signed_cert(
-        server_name=server_name,
-        output_dir=args.output_dir,
-    )
-
-    print(f"\nCertificate: {cert_path}")
-    print(f"Key: {key_path}")
-    print(f"\nTo use with nginx:")
-    print(f"  ssl_certificate {cert_path};")
-    print(f"  ssl_certificate_key {key_path};")
+    print(f"\n  ssl_certificate {cert};")
+    print(f"  ssl_certificate_key {key};")
 
 
 if __name__ == "__main__":
