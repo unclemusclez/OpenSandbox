@@ -81,6 +81,12 @@ LOCATION_BLOCK = """    location /{port}/ {{
             add_header Cache-Control "no-store, no-cache, must-revalidate";
         }}
 
+        location ~* \.wasm$ {{
+            proxy_pass http://127.0.0.1:{port};
+            default_type application/wasm;
+            add_header Content-Type application/wasm;
+        }}
+
         # Add headers to the main block as well
         add_header Service-Worker-Allowed /;
         proxy_set_header X-Real-IP $remote_addr;
