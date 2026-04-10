@@ -72,29 +72,22 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header Accept-Encoding gzip;
-        proxy_redirect off;
-        proxy_cookie_path / /{port}/;
         
-        # Explicitly handle the service worker to ensure the header is attached
- 
+        # Explicit block for the service worker
         location ~* service-worker\.js$ {{
             proxy_pass http://127.0.0.1:{port};
             add_header Service-Worker-Allowed /;
-            # Force the correct MIME type
-            default_type application/javascript;
             add_header Content-Type application/javascript;
-            add_header Cache-Control "no-cache";
+            add_header Cache-Control "no-store, no-cache, must-revalidate";
         }}
 
+        # Add headers to the main block as well
         add_header Service-Worker-Allowed /;
-        proxy_ssl_verify off;
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Disable buffering for webviews to prevent partial loads
         proxy_buffering off;
         proxy_request_buffering off;
     }}
