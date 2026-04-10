@@ -15,33 +15,37 @@
 """
 VS Code Remote - Multi-Instance Hackathon Example
 
-Runs multiple VS Code sandbox instances, each reverse-proxied through nginx
-with its own self-signed SSL certificate. Certs are generated on the host
-via openssl (no pip dependencies). code-server always runs HTTP inside
-containers; nginx terminates SSL.
+Runs multiple VS Code sandbox instances driven by a groups.yaml config.
+Each user gets their own sandbox with workspace at /workspace/{group}/{username}.
+An nginx reverse proxy maps each instance by port number: /{port}/.
 
 Usage:
     # Setup (one-time)
     bash examples/vscode-remote/setup.sh
 
-    # Run 3 instances with nginx + auto-generated SSL
-    uv run python examples/vscode-remote/main.py --instances 3 --use-nginx
+    # Run all groups from groups.yaml
+    uv run python examples/vscode-remote/main.py --groups groups.yaml
 
-    # Run single instance, host mode (port 8443)
-    uv run python examples/vscode-remote/main.py --instances 1 --use-nginx --mode host
+    # Run a single group
+    uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha
+
+    # Run with per-user passwords (secure mode)
+    uv run python examples/vscode-remote/main.py --groups groups.yaml --secure
+
+    # Run without groups (single instance, like examples/vscode/main.py)
+    uv run python examples/vscode-remote/main.py
 """
 
 import argparse
 import asyncio
 import os
-import random
-import re
-import string
+import secrets
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
@@ -51,38 +55,73 @@ from nginx_config import NginxConfigGenerator
 from ssl_cert import SSLCertificateGenerator
 
 
-def _generate_random_string(length: int = 8) -> str:
-    """Generate a random alphanumeric string for URL path obfuscation."""
-    characters = string.ascii_lowercase + string.digits
-    return "".join(random.choice(characters) for _ in range(length))
+@dataclass
+class UserInfo:
+    group: str
+    username: str
+
+    @property
+    def workspace(self) -> str:
+        return f"{self.group}/{self.username}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.group}/{self.username}"
 
 
 @dataclass
 class SandboxInstance:
-    """Represents a single VS Code sandbox instance."""
-
-    instance_id: int
-    workspace: str
+    user: UserInfo
     port: int
     sandbox: Sandbox
     endpoint: str
-    https: bool = False
+    url_path: str
+    upstream_host: str
+    upstream_port: int
+    upstream_path: str
+    password: Optional[str] = None
+    nginx_config_path: Optional[str] = None
     cert_path: Optional[str] = None
     key_path: Optional[str] = None
-    nginx_config_path: Optional[str] = None
-    url_path: Optional[str] = None  # URI path component e.g. /8443/ or /abc12345/
 
 
-def _required_env(name: str) -> str:
-    """Get a required environment variable or raise an error."""
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"{name} is required")
-    return value
+def load_groups(groups_file: str, group_filter: Optional[str] = None) -> list[UserInfo]:
+    with open(groups_file) as f:
+        data = yaml.safe_load(f)
+
+    groups = data.get("groups", {})
+    users: list[UserInfo] = []
+
+    for group_name, group_data in groups.items():
+        if group_filter and group_name != group_filter:
+            continue
+        for username in group_data.get("users", []):
+            users.append(UserInfo(group=group_name, username=username))
+
+    return users
+
+
+def generate_password(length: int = 24) -> str:
+    return secrets.token_urlsafe(length)
+
+
+def parse_endpoint(
+    endpoint_str: str, mode: str, port: int
+) -> tuple[str, int, str]:
+    if mode == "host":
+        return "127.0.0.1", port, ""
+
+    parts = endpoint_str.split("/", 1)
+    upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
+    host_port_part = parts[0]
+    if ":" in host_port_part:
+        upstream_port = int(host_port_part.rsplit(":", 1)[1])
+    else:
+        upstream_port = 80
+    return "127.0.0.1", upstream_port, upstream_path
 
 
 async def _print_logs(label: str, execution) -> None:
-    """Print logs from a sandbox execution."""
     for msg in execution.logs.stdout:
         print(f"[{label} stdout] {msg.text}")
     for msg in execution.logs.stderr:
@@ -92,37 +131,17 @@ async def _print_logs(label: str, execution) -> None:
 
 
 async def create_instance(
-    instance_id: int,
-    workspace: str,
+    user: UserInfo,
     port: int,
     config: ConnectionConfig,
     image: str,
     python_version: str,
     timeout: timedelta,
-    mode: str = "bridge",
-    use_nginx: bool = False,
-    nginx_domain: str = "localhost",
+    mode: str = "host",
+    secure: bool = False,
     ssl_dir: str = "/etc/nginx/ssl",
     server_ip: Optional[str] = None,
 ) -> SandboxInstance:
-    """Create a single VS Code sandbox instance with nginx SSL termination.
-
-    Args:
-        instance_id: Instance index
-        workspace: Workspace directory name inside container
-        port: Port code-server listens on inside the container
-        config: OpenSandbox connection configuration
-        image: Docker image name
-        python_version: Python version to inject into container env
-        mode: 'bridge' (random port 40000-60000) or 'host' (sequential from 8443)
-        use_nginx: If True, generate nginx config + per-instance SSL cert
-        nginx_domain: Base domain for subdomain-based routing
-        ssl_dir: Directory to store generated SSL certificates
-        server_ip: Server IP to embed in SAN (fixes SW SSL errors)
-
-    Returns:
-        SandboxInstance with endpoint, cert paths, and nginx config info
-    """
     env = {"PYTHON_VERSION": python_version}
 
     sandbox = await Sandbox.create(
@@ -135,274 +154,275 @@ async def create_instance(
     endpoint = await sandbox.get_endpoint(port)
     endpoint_str = endpoint.endpoint
     endpoint_host = endpoint_str.split(":")[0]
-    is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", endpoint_host))
 
+    is_eip = (
+        endpoint_host.replace(".", "").isdigit()
+        and len(endpoint_host.split(".")) == 4
+    )
     if is_eip and server_ip is None:
         server_ip = endpoint_host
-        print(f"[Instance {instance_id}] Detected EIP: {server_ip}")
+        print(f"[{user.label}] Detected EIP: {server_ip}")
 
-    if mode == "host":
-        upstream_host = "127.0.0.1"
-        upstream_port = port
-        upstream_path = ""
-    else:
-        parts = endpoint_str.split("/", 1)
-        upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
-        host_port_part = parts[0]
-        if ":" in host_port_part:
-            upstream_port = int(host_port_part.rsplit(":", 1)[1])
-        else:
-            upstream_port = 80
-        upstream_host = "127.0.0.1"
+    upstream_host, upstream_port, upstream_path = parse_endpoint(
+        endpoint_str, mode, port
+    )
 
-    workspace_path = f"/workspace/{workspace}"
+    workspace_path = f"/workspace/{user.workspace}"
+
+    password = None
+    auth_flag = "--auth none"
+    if secure:
+        password = generate_password()
+        auth_flag = "--auth password"
 
     code_server_cmd = (
         f"code-server --bind-addr 0.0.0.0:{port} "
-        f"--auth none "
+        f"{auth_flag} "
         f"--disable-telemetry "
         f"{workspace_path}"
     )
-    print(f"[Instance {instance_id}] Starting code-server (HTTP) on port {port}")
+    print(f"[{user.label}] Starting code-server on port {port}")
 
     start_exec = await sandbox.commands.run(
         code_server_cmd,
         opts=RunCommandOpts(background=True),
     )
-    await _print_logs(f"code-server-{instance_id}", start_exec)
+    await _print_logs(user.label, start_exec)
 
-    url_path = None
-    nginx_config_path = None
+    if secure and password:
+        mkdir_cmd = (
+            f"mkdir -p {workspace_path} && "
+            f"CONFIG_DIR=$(dirname $(code-server --list-extensions 2>/dev/null | head -1 || echo /tmp/config)) && "
+            f"mkdir -p /tmp/code-server && "
+            f"echo '{password}' > /tmp/code-server/password"
+        )
+        await sandbox.commands.run(mkdir_cmd)
+        print(f"[{user.label}] Password set (saved to /tmp/code-server/password)")
+
     cert_path = None
     key_path = None
 
-    if use_nginx:
-        print(f"[Nginx] Generating config for instance {instance_id} (port={port})...")
-        nginx_gen = NginxConfigGenerator()
+    if server_ip or mode == "host":
         ssl_gen = SSLCertificateGenerator(output_dir=ssl_dir)
-
-        if mode == "host":
-            url_path = f"/{port}/"
-            cert_path, key_path = ssl_gen.generate_cert_for_port(
-                port=port,
-                server_ip=server_ip,
-            )
-            server_name = endpoint_host or "localhost"
-        else:
-            url_path = f"/{_generate_random_string()}/"
-            subdomain = ssl_gen.generate_random_subdomain(base_domain=nginx_domain)
-            server_name = subdomain
-            cert_path, key_path = ssl_gen.generate_cert_for_subdomain(
-                subdomain=subdomain,
-                server_ip=server_ip,
-            )
-
-        nginx_config_path = nginx_gen.generate_config(
-            server_name=server_name,
-            upstream_host=upstream_host,
-            upstream_port=upstream_port,
-            upstream_path=upstream_path,
-            use_https=True,
-            cert_path=cert_path,
-            key_path=key_path,
-            location_path=url_path,
+        cert_path, key_path = ssl_gen.generate_cert_for_port(
+            port=port,
+            server_ip=server_ip,
         )
-        nginx_gen.enable_config(nginx_config_path)
-        nginx_gen.reload_nginx()
-        print(f"[Nginx] Instance {instance_id} ready at https://{server_name}{url_path}")
 
     return SandboxInstance(
-        instance_id=instance_id,
-        workspace=workspace,
+        user=user,
         port=port,
         sandbox=sandbox,
-        endpoint=endpoint.endpoint,
-        https=use_nginx,
+        endpoint=endpoint_str,
+        url_path=f"/{port}/",
+        upstream_host=upstream_host,
+        upstream_port=upstream_port,
+        upstream_path=upstream_path,
+        password=password,
         cert_path=cert_path,
         key_path=key_path,
-        nginx_config_path=nginx_config_path,
-        url_path=url_path,
     )
-
-
-async def run_instances(
-    instances: int,
-    workspace: str,
-    start_port: int,
-    sandbox_timeout: timedelta,
-    domain: str,
-    api_key: Optional[str],
-    image: str,
-    python_version: str,
-    mode: str = "bridge",
-    use_nginx: bool = False,
-    nginx_domain: str = "localhost",
-    ssl_dir: str = "/etc/nginx/ssl",
-) -> list[SandboxInstance]:
-    """Run multiple VS Code sandbox instances concurrently."""
-    config = ConnectionConfig(
-        domain=domain,
-        api_key=api_key,
-        request_timeout=timedelta(seconds=60),
-    )
-
-    tasks = []
-    for i in range(instances):
-        tasks.append(
-            create_instance(
-                instance_id=i,
-                workspace=workspace,
-                port=start_port + i,
-                config=config,
-                image=image,
-                python_version=python_version,
-                timeout=sandbox_timeout,
-                mode=mode,
-                use_nginx=use_nginx,
-                nginx_domain=nginx_domain,
-                ssl_dir=ssl_dir,
-            )
-        )
-
-    instances_list = await asyncio.gather(*tasks)
-    return list(instances_list)
 
 
 async def main() -> None:
-    """Main entry point for the multi-instance VS Code example."""
     parser = argparse.ArgumentParser(
-        description="Run multiple VS Code sandbox instances with nginx SSL termination",
+        description="Run VS Code sandbox instances with nginx reverse proxy",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Setup prerequisites (one-time)
-  bash examples/vscode-remote/setup.sh
+  # Run all groups
+  uv run python examples/vscode-remote/main.py --groups groups.yaml
 
-  # Run 3 instances with auto-generated nginx + SSL (bridge mode)
-  uv run python examples/vscode-remote/main.py --instances 3 --use-nginx
+  # Run a single group
+  uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha
 
-  # Run 1 instance in host mode (port -> /port/ URI path)
-  uv run python examples/vscode-remote/main.py --instances 1 --use-nginx --mode host
+  # Run with secure per-user passwords
+  uv run python examples/vscode-remote/main.py --groups groups.yaml --secure
 
-  # Custom SSL output directory
-  uv run python examples/vscode-remote/main.py --instances 1 --use-nginx --ssl-dir ./certs
-
-  # Run without nginx (direct HTTP access)
-  uv run python examples/vscode-remote/main.py --instances 2
+  # Single instance without groups (like examples/vscode/main.py)
+  uv run python examples/vscode-remote/main.py
         """,
     )
 
     parser.add_argument(
-        "--instances", type=int, default=1,
-        help="Number of concurrent sandbox instances (default: 1)",
+        "--groups",
+        type=str,
+        default=None,
+        help="Path to groups.yaml file",
     )
     parser.add_argument(
-        "--workspace", type=str, default="default",
-        help="Workspace name for all instances (default: default)",
+        "--group",
+        type=str,
+        default=None,
+        help="Run only this group from groups.yaml",
     )
     parser.add_argument(
-        "--port", type=int, default=8443,
+        "--port",
+        type=int,
+        default=8443,
         help="Starting port for code-server instances (default: 8443)",
     )
     parser.add_argument(
-        "--timeout", type=int, default=10,
+        "--timeout",
+        type=int,
+        default=10,
         help="Timeout in minutes to keep sandboxes alive (default: 10)",
     )
     parser.add_argument(
-        "--domain", type=str, default=None,
+        "--domain",
+        type=str,
+        default=None,
         help="Sandbox domain (default: localhost:8080)",
     )
     parser.add_argument(
-        "--api-key", type=str, default=None,
+        "--api-key",
+        type=str,
+        default=None,
         help="Sandbox API key (optional)",
     )
     parser.add_argument(
-        "--image", type=str, default=None,
+        "--image",
+        type=str,
+        default=None,
         help="Docker image for sandbox (default: opensandbox/vscode:latest)",
     )
     parser.add_argument(
-        "--python-version", type=str, default="3.11",
+        "--python-version",
+        type=str,
+        default="3.11",
         help="Python version for the sandbox (default: 3.11)",
     )
     parser.add_argument(
-        "--mode", type=str, choices=["bridge", "host"], default="bridge",
-        help="Network mode: bridge (random port, subdomain URI) or host (sequential /port/ URI)",
+        "--mode",
+        type=str,
+        choices=["bridge", "host"],
+        default="host",
+        help="Network mode matching server config: host or bridge (default: host)",
     )
     parser.add_argument(
-        "--use-nginx", action="store_true", default=False,
-        help="Use nginx reverse proxy with per-instance SSL certs (auto-generated via openssl)",
+        "--secure",
+        action="store_true",
+        default=False,
+        help="Enable per-user password authentication for code-server",
     )
     parser.add_argument(
-        "--nginx-domain", type=str, default="localhost",
-        help="Base domain for nginx subdomains (bridge mode, default: localhost)",
-    )
-    parser.add_argument(
-        "--ssl-dir", type=str, default="/etc/nginx/ssl",
+        "--ssl-dir",
+        type=str,
+        default="/etc/nginx/ssl",
         help="Directory to store generated SSL certificates (default: /etc/nginx/ssl)",
     )
     parser.add_argument(
-        "--server-ip", type=str, default=None,
-        help="Server IP address for SAN in certs (fixes Service Worker SSL errors)",
+        "--server-ip",
+        type=str,
+        default=None,
+        help="Server IP for SSL cert SAN (fixes Service Worker SSL errors)",
+    )
+    parser.add_argument(
+        "--use-nginx",
+        action="store_true",
+        default=False,
+        help="Generate nginx reverse proxy config with SSL termination",
     )
 
     args = parser.parse_args()
-
-    if args.instances < 1:
-        print("Error: Number of instances must be at least 1")
-        sys.exit(1)
-
-    if args.instances > 100:
-        print("Warning: Running more than 100 instances may cause resource issues")
 
     domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = args.api_key or os.getenv("SANDBOX_API_KEY")
     image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode:latest")
     python_version = args.python_version or os.getenv("PYTHON_VERSION", "3.11")
 
-    print(f"Starting {args.instances} VS Code sandbox instance(s)...")
+    users: list[UserInfo]
+    if args.groups:
+        users = load_groups(args.groups, group_filter=args.group)
+        if not users:
+            print("Error: No users found in groups config")
+            sys.exit(1)
+        if args.group and not any(u.group == args.group for u in users):
+            print(f"Error: Group '{args.group}' not found in {args.groups}")
+            sys.exit(1)
+    else:
+        users = [UserInfo(group="default", username="workspace")]
+
+    total = len(users)
+    port_range = f"{args.port} - {args.port + total - 1}"
+
+    print(f"Starting {total} VS Code sandbox instance(s)...")
     print(f"  Domain: {domain}")
     print(f"  Image: {image}")
-    print(f"  Workspace: {args.workspace}")
     print(f"  Mode: {args.mode}")
-    print(f"  Port range: {args.port} - {args.port + args.instances - 1}")
-    print(f"  Nginx: {'Yes (auto SSL)' if args.use_nginx else 'No (direct HTTP)'}")
-    print(f"  SSL dir: {args.ssl_dir}")
+    print(f"  Port range: {port_range}")
+    print(f"  Secure: {'Yes (per-user passwords)' if args.secure else 'No (--auth none)'}")
+    print(f"  Nginx: {'Yes' if args.use_nginx else 'No'}")
+    if args.groups:
+        print(f"  Groups file: {args.groups}")
+        if args.group:
+            print(f"  Group filter: {args.group}")
     print()
 
+    config = ConnectionConfig(
+        domain=domain,
+        api_key=api_key,
+        request_timeout=timedelta(seconds=60),
+    )
+    sandbox_timeout = timedelta(minutes=args.timeout)
+
+    instances: list[SandboxInstance] = []
+
     try:
-        sandbox_timeout = timedelta(minutes=args.timeout)
+        tasks = []
+        for i, user in enumerate(users):
+            tasks.append(
+                create_instance(
+                    user=user,
+                    port=args.port + i,
+                    config=config,
+                    image=image,
+                    python_version=python_version,
+                    timeout=sandbox_timeout,
+                    mode=args.mode,
+                    secure=args.secure,
+                    ssl_dir=args.ssl_dir,
+                    server_ip=args.server_ip,
+                )
+            )
 
-        instances_list = await run_instances(
-            instances=args.instances,
-            workspace=args.workspace,
-            start_port=args.port,
-            sandbox_timeout=sandbox_timeout,
-            domain=domain,
-            api_key=api_key,
-            image=image,
-            python_version=python_version,
-            mode=args.mode,
-            use_nginx=args.use_nginx,
-            nginx_domain=args.nginx_domain,
-            ssl_dir=args.ssl_dir,
-        )
+        instances = list(await asyncio.gather(*tasks))
 
-        print("\n" + "=" * 60)
+        if args.use_nginx:
+            nginx_gen = NginxConfigGenerator()
+            nginx_gen.generate_combined_config(
+                instances=instances,
+                server_name=args.server_ip or "localhost",
+            )
+            nginx_gen.reload_nginx()
+            print("[Nginx] Combined config generated and nginx reloaded")
+
+        print("\n" + "=" * 70)
         print("VS Code Web Endpoints")
-        print("=" * 60)
-        for instance in instances_list:
-            protocol = "https" if instance.https else "http"
-            print(f"\n  Instance {instance.instance_id + 1}:")
-            print(f"    Workspace: {instance.workspace}")
-            print(f"    Port: {instance.port}")
-            if instance.nginx_config_path and instance.url_path:
-                config_filename = Path(instance.nginx_config_path).name
-                server_name = config_filename.replace("sandbox-", "").replace("-", ".")
-                print(f"    URL: {protocol}://{server_name}{instance.url_path}")
-            else:
-                print(f"    URL: {protocol}://{instance.endpoint}/")
-        print()
+        print("=" * 70)
 
+        current_group: Optional[str] = None
+        for inst in instances:
+            if inst.user.group != current_group:
+                current_group = inst.user.group
+                print(f"\n  Group: {current_group}")
+
+            protocol = "https" if args.use_nginx else "http"
+            server_host = args.server_ip or "localhost"
+
+            if args.use_nginx:
+                url = f"{protocol}://{server_host}{inst.url_path}"
+            else:
+                url = f"http://{inst.endpoint}/"
+
+            print(f"    {inst.user.username}:")
+            print(f"      URL: {url}")
+            print(f"      Workspace: /workspace/{inst.user.workspace}")
+            print(f"      Port: {inst.port}")
+            if inst.password:
+                print(f"      Password: {inst.password}")
+
+        print()
         print(
             f"Keeping sandboxes alive for {args.timeout} minutes. "
             f"Press Ctrl+C to exit sooner."
@@ -416,30 +436,21 @@ Examples:
     except KeyboardInterrupt:
         print("\nInterrupted by user")
     finally:
-        print("\nCleaning up sandbox instances...")
+        print("\nCleaning up...")
 
-        if args.use_nginx:
-            print("\nCleaning up nginx configurations...")
+        if args.use_nginx and instances:
             nginx_gen = NginxConfigGenerator()
-            for instance in instances_list:
-                if instance.nginx_config_path:
-                    try:
-                        nginx_gen.delete_config(instance.nginx_config_path)
-                    except Exception as e:
-                        print(f"  Note: Failed to delete nginx config: {e}")
             try:
-                nginx_gen.reload_nginx()
+                nginx_gen.cleanup_configs()
             except Exception as e:
-                print(f"  Note: Failed to reload nginx: {e}")
+                print(f"  Note: Failed to clean nginx configs: {e}")
 
-        for instance in instances_list:
+        for inst in instances:
             try:
-                await instance.sandbox.kill()
+                await inst.sandbox.kill()
             except Exception as e:
-                print(
-                    f"  Note: Sandbox {instance.instance_id + 1} may have already been "
-                    f"terminated: {e}"
-                )
+                print(f"  Note: Sandbox {inst.user.label} may already be terminated: {e}")
+
         print("Cleanup complete.")
 
 

@@ -44,9 +44,10 @@ sudo mkdir -p /etc/nginx/sites-enabled
 sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-available 2>/dev/null || true
 sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-enabled 2>/dev/null || true
 
-
 echo "[Setup] Working from source..."
 git clone https://github.com/unclemusclez/OpenSandbox.git
+cd OpenSandbox/examples/vscode
+docker build -t opensandbox/vscode:latest .
 python -m venv ~/.venv
 . ~/.venv/bin/activate
 cd ~/OpenSandbox/server
@@ -54,7 +55,6 @@ pip install .
 cp opensandbox_server/examples/example.config.toml ~/.sandbox.toml
 cd ~/OpenSandbox/cli
 pip install .
-
 
 echo "[Setup] Prerequisites installed successfully."
 echo "[Setup] SSL certs will be generated at: ${SSL_DIR}"

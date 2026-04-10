@@ -2,12 +2,12 @@
 
 Use this file for all work in `examples/vscode-remote/`. Reference template: `examples/vscode/`.
 This is a hackathon-focused multi-instance VS Code remote development tool with nginx
-reverse proxy, per-instance SSL (via openssl), and persistent workspace support.
+reverse proxy, per-instance SSL (via openssl), groups support, and persistent workspace support.
 
 ## Scope
 
 - `examples/vscode-remote/**` — all files in this directory
-- Reference: `examples/vscode/main.py` — simple single-instance pattern (87 lines)
+- Reference: `examples/vscode/main.py` — simple single-instance pattern
 
 ## Commands
 
@@ -27,23 +27,26 @@ uv run pyright
 # Run all tests
 uv run pytest
 
-# Run a single test
-uv run pytest tests/test_file.py::test_function_name -v
-
-# Pre-commit hooks (project-level)
-pre-commit run --all-files
-
 # Build Docker image
-docker build -t opensandbox/vscode:latest .
+docker build -t opensandbox/vscode:latest examples/vscode-remote/
 
-# Run: 3 instances with auto-generated nginx + SSL (bridge mode, subdomain URIs)
-uv run python examples/vscode-remote/main.py --instances 3 --use-nginx
+# Run: all groups from groups.yaml with nginx + SSL
+uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx
 
-# Run: 1 instance in host mode (port -> /port/ URI path)
-uv run python examples/vscode-remote/main.py --instances 1 --use-nginx --mode host
+# Run: single group
+uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha --use-nginx
+
+# Run: with secure per-user passwords
+uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx --secure
+
+# Run: single instance without groups (like examples/vscode/main.py)
+uv run python examples/vscode-remote/main.py --use-nginx
+
+# Run: bridge mode (must match server's docker.network_mode)
+uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx --mode bridge
 
 # Run: with custom SSL dir and server IP for SAN
-uv run python examples/vscode-remote/main.py --instances 1 --use-nginx \
+uv run python examples/vscode-remote/main.py --use-nginx \
     --ssl-dir ./certs --server-ip 165.245.140.250
 
 # Generate a single cert manually via openssl
@@ -62,8 +65,11 @@ uv run python examples/vscode-remote/ssl_cert.py --port 8443 --ip 165.245.140.25
 Order: stdlib → third-party → local:
 ```python
 import asyncio
-from pathlib import Path
+from dataclasses import dataclass
+from datetime import timedelta
 from typing import Optional
+
+import yaml
 
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
@@ -96,46 +102,74 @@ Google-style on public classes/functions. Module docstring at top of every file.
 - Always use `try/finally` for cleanup (kill sandboxes, remove nginx configs)
 
 ### Logging (CLI Tools)
-Use `print()` with prefixed labels: `[Instance 0]`, `[Nginx]`, `[SSL]`
+Use `print()` with prefixed labels: `[{group}/{username}]`, `[Nginx]`, `[SSL]`
 
 ## Architecture
 
-### Core Model
-- **`SandboxInstance` dataclass**: id, workspace, port, sandbox object, endpoint URL, https state,
-  cert/key paths, nginx config path, url_path (URI path e.g. `/8443/`)
+### Core Models
+- **`UserInfo` dataclass**: group, username, workspace (`{group}/{username}`), label
+- **`SandboxInstance` dataclass**: user, port, sandbox, endpoint, url_path (`/{port}/`),
+  upstream_host/port/path, password (if secure), cert/key paths
 
 ### Key Classes
+- **`NginxConfigGenerator`**: generates a **single combined** nginx config with all location
+  blocks (one per port), manages sites-available/enabled symlinks, reloads nginx.
+  - `generate_combined_config(instances, server_name)` — writes one file with all `/{port}/` locations
 - **`SSLCertificateGenerator`**: generates self-signed certs via **openssl CLI** (no pip deps).
-  Two methods:
-  - `generate_cert_for_port(port, server_ip)` — host mode, cert named `port-{port}.crt`
-  - `generate_cert_for_subdomain(subdomain, server_ip)` — bridge mode, subdomain-based cert
-  - Both embed server IP in SAN to fix Service Worker SSL errors.
-- **`NginxConfigGenerator`**: generates per-instance nginx configs, manages sites-available/enabled
-  symlinks, reloads nginx. Uses `location_path` param for URI-based routing.
+  - `generate_cert_for_port(port, server_ip)` — cert named `port-{port}.crt`
+  - Embeds server IP in SAN to fix Service Worker SSL errors.
 
-### Two Network Modes
+### Groups YAML
 
-| Mode | Port Strategy | URI Path | Cert Name | Use Case |
-|------|---------------|----------|-----------|----------|
-| **Bridge** | Random 40000–60000 | `/<random>/` | `<subdomain>.crt` | Subdomain routing |
-| **Host** | Sequential from 8443 | `/<port>/` | `port-<port>.crt` | Direct port mapping |
+```yaml
+groups:
+  alpha:
+    users:
+      - alice
+      - bob
+  beta:
+    users:
+      - dave
+```
+
+Each user gets: sandbox instance → workspace at `/workspace/{group}/{username}` → URL at `https://{server_ip}/{port}/`
+
+### Network Modes (must match server's `docker.network_mode`)
+
+| Mode | Server Endpoint Format | Nginx proxy_pass |
+|------|----------------------|------------------|
+| **Host** | `{ip}:{port}` | `http://127.0.0.1:{port}/` |
+| **Bridge** | `{ip}:{mapped_port}/proxy/{port}` | `http://127.0.0.1:{mapped_port}/proxy/{port}` |
+
+The `--mode` flag must match the server's `[docker]` `network_mode` in `~/.sandbox.toml`:
+- `--mode host` when `network_mode = "host"` (default)
+- `--mode bridge` when `network_mode = "bridge"`
+
+### Security Modes
+
+| Flag | code-server auth | Password |
+|------|-----------------|----------|
+| (default) | `--auth none` | None |
+| `--secure` | `--auth password` | Auto-generated per-user (24-char token) |
 
 ### Certificate Flow (openssl, no cryptography library)
 
 1. On instance creation, `SSLCertificateGenerator` calls `openssl req -x509` via subprocess
 2. Config file is generated inline with SAN entries (IP + DNS names)
-3. Cert saved to `{ssl_dir}/port-{port}.crt` or `{ssl_dir}/{subdomain}.crt`
-4. Nginx HTTPS template references the cert for SSL termination
+3. Cert saved to `{ssl_dir}/port-{port}.crt`
+4. Nginx config references the first cert for SSL termination (all instances share port 443)
 5. code-server always runs **HTTP** inside containers; nginx terminates SSL externally
 
-### Nginx HTTPS Template Features
-- Listens 443 ssl http2
+### Nginx Template Features
+- Single server block listening on 80 + 443 ssl
+- One `location /{port}/` block per instance
 - TLSv1.2 + TLSv1.3, `HIGH:!aNULL:!MD5` ciphers
 - WebSocket upgrade headers (`Upgrade`, `Connection "upgrade"`)
 - `X-Forwarded-For`, `X-Forwarded-Proto https`, `proxy_redirect off`
 - `add_header Service-Worker-Allowed /;` (fixes SW scope errors)
 - `proxy_ssl_verify off;` (backend is HTTP)
 - `proxy_read/send_timeout 86400` (24h for long-lived WS connections)
+- `proxy_buffering off; proxy_request_buffering off;` (real-time data)
 
 ## Guardrails
 
@@ -145,25 +179,28 @@ Use `print()` with prefixed labels: `[Instance 0]`, `[Nginx]`, `[SSL]`
 - Use non-root `vscode` user in containers
 - Include Apache 2.0 header on every new file
 - Pass `--server-ip` when accessing via IP address (prevents SW SSL errors)
+- Match `--mode` to the server's `docker.network_mode` config
 
 ### Must Never
 - Commit secrets, API keys, or `.key` files to the repository
 - Generate certs inside sandbox containers
 - Mix unrelated changes in one PR
-- Remove `--auth none` without replacement (hackathon UX depends on it)
 - Use the `cryptography` pip package (use openssl subprocess instead)
+- Mismatch `--mode` flag with server network mode (causes broken proxy_pass)
 
 ### Known Gotchas
 
-**Service Worker SSL Error** (the error from the issue):
+**Service Worker SSL Error**:
 ```
 SecurityError: Failed to register a ServiceWorker for scope ('https://{ip}/{path}/.../pre/')
 An SSL certificate error occurred when fetching the script.
 ```
 - **Root cause**: SW script fetch fails because the cert doesn't cover the target IP/domain
 - **Fix**: Pass `--server-ip <IP>` so the cert includes `IP:<ip>` in SAN extensions.
-  The nginx template already includes `Service-Worker-Allowed /` and `proxy_ssl_verify off`.
-- If still failing: use host mode (`--mode host`) which maps port → `/port/` URI directly
+
+**Network mode mismatch**: If `--mode host` but server runs `network_mode = "bridge"`,
+the endpoint URL contains a mapped port + `/proxy/` path. The nginx config will proxy to
+the wrong upstream. Always match `--mode` to the server config.
 
 **Environment Variables**:
 - `SANDBOX_DOMAIN` — server address (default: `localhost:8080`)
@@ -176,10 +213,12 @@ An SSL certificate error occurred when fetching the script.
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point; argparse CLI; instance orchestration; mode selection |
+| `main.py` | Entry point; argparse CLI; groups loading; instance orchestration |
+| `groups.yaml` | Groups and users configuration |
 | `setup.sh` | One-time install: python3, nginx, docker.io, docker-buildx, openssl, uv |
-| `nginx_config.py` | `NginxConfigGenerator`; HTTP/HTTPS templates with SW headers; symlink mgmt |
+| `nginx_config.py` | `NginxConfigGenerator`; combined config with port-based location blocks |
 | `ssl_cert.py` | `SSLCertificateGenerator`; openssl-based cert generation (no pip deps) |
 | `generate-certs.py` | Legacy mkcert helper (preserved for local dev with browser-trusted certs) |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
-| `../vscode/main.py` | Reference template: single-instance, minimal, ~87 lines |
+| `template.portnumber.available.md` | Nginx template reference showing port-based location blocks |
+| `../vscode/main.py` | Reference template: single-instance, minimal |
