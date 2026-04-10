@@ -9,7 +9,7 @@
 # Example (host mode, 2 users on ports 8443 and 8444):
 
 server {
-    listen 80 default_server;
+    listen 80;
     listen 443 ssl;
     listen [::]:443 ssl;
     server_name <server_ip>;

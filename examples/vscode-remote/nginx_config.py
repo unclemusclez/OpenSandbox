@@ -16,14 +16,24 @@
 """
 Nginx Configuration Generator for VS Code Remote Example
 
-Generates a single nginx config with location blocks per sandbox instance,
-keyed by port number. Each instance is accessible at /{port}/.
+Generates per-port nginx configs in /etc/nginx/sites-available/, symlinks them
+into /etc/nginx/sites-enabled/. Each instance gets its own config file named
+sandbox-vscode-remote-{port}.
 
 Usage:
     from nginx_config import NginxConfigGenerator
 
     generator = NginxConfigGenerator()
-    generator.generate_combined_config(instances=[...], server_name="1.2.3.4")
+    path = generator.generate_port_config(
+        port=8443,
+        server_name="1.2.3.4",
+        upstream_host="127.0.0.1",
+        upstream_port=8443,
+        upstream_path="/",
+        cert_path="/etc/nginx/ssl/port-8443.crt",
+        key_path="/etc/nginx/ssl/port-8443.key",
+    )
+    generator.enable_config(path)
     generator.reload_nginx()
 """
 
@@ -31,7 +41,18 @@ import subprocess
 from pathlib import Path
 
 
-LOCATION_BLOCK = """    location {url_path} {{
+PORT_CONFIG_TEMPLATE = """server {{
+    listen 80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {server_name};
+
+    ssl_certificate {cert_path};
+    ssl_certificate_key {key_path};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location /{port}/ {{
         proxy_pass http://{upstream_host}:{upstream_port}{upstream_path};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -49,26 +70,13 @@ LOCATION_BLOCK = """    location {url_path} {{
         proxy_buffering off;
         proxy_request_buffering off;
     }}
+}}
 """
 
-HTTPS_SERVER_TEMPLATE = """server {{
-    listen 80 default_server;
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name {server_name};
-
-    ssl_certificate {cert_path};
-    ssl_certificate_key {key_path};
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-{locations}}}
-"""
+CONFIG_PREFIX = "sandbox-vscode-remote-"
 
 
 class NginxConfigGenerator:
-
-    CONFIG_NAME = "vscode-remote"
 
     def __init__(
         self,
@@ -85,59 +93,38 @@ class NginxConfigGenerator:
         self.sites_available_dir.mkdir(parents=True, exist_ok=True)
         self.sites_enabled_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate_combined_config(
+    def generate_port_config(
         self,
-        instances: list,
+        port: int,
         server_name: str,
+        upstream_host: str,
+        upstream_port: int,
+        upstream_path: str,
+        cert_path: str,
+        key_path: str,
     ) -> str:
-        cert_path = None
-        key_path = None
-        locations = ""
-
-        for inst in instances:
-            upstream_path = inst.upstream_path if inst.upstream_path else "/"
-            locations += LOCATION_BLOCK.format(
-                url_path=inst.url_path,
-                upstream_host=inst.upstream_host,
-                upstream_port=inst.upstream_port,
-                upstream_path=upstream_path,
-            )
-
-            if inst.cert_path and inst.key_path:
-                cert_path = inst.cert_path
-                key_path = inst.key_path
-
-        if not cert_path or not key_path:
-            raise ValueError(
-                "No SSL certificate available. "
-                "At least one instance must have cert_path and key_path."
-            )
-
-        config_content = HTTPS_SERVER_TEMPLATE.format(
+        config_content = PORT_CONFIG_TEMPLATE.format(
+            port=port,
             server_name=server_name,
+            upstream_host=upstream_host,
+            upstream_port=upstream_port,
+            upstream_path=upstream_path,
             cert_path=cert_path,
             key_path=key_path,
-            locations=locations,
         )
 
-        config_filename = f"sandbox-{self.CONFIG_NAME}"
+        config_filename = f"{CONFIG_PREFIX}{port}"
         config_path = self.sites_available_dir / config_filename
 
         try:
             config_path.write_text(config_content)
-            print(f"[Nginx] Combined config created: {config_path}")
+            print(f"[Nginx] Config created: {config_path}")
         except IOError as e:
             raise RuntimeError(f"Failed to write nginx config: {e}") from e
 
-        self.enable_config(str(config_path))
         return str(config_path)
 
     def enable_config(self, config_path: str) -> None:
-        if not self.test_config():
-            raise RuntimeError(
-                "Nginx config test failed. Aborting enable operation."
-            )
-
         config_filename = Path(config_path).name
         symlink_path = self.sites_enabled_dir / config_filename
 
@@ -173,6 +160,12 @@ class NginxConfigGenerator:
         except OSError as e:
             print(f"[Nginx] Warning: Failed to delete config: {e}")
 
+    def delete_config_by_port(self, port: int) -> None:
+        config_filename = f"{CONFIG_PREFIX}{port}"
+        config_path = self.sites_available_dir / config_filename
+        if config_path.exists():
+            self.delete_config(str(config_path))
+
     def reload_nginx(self) -> None:
         try:
             subprocess.run(
@@ -204,17 +197,19 @@ class NginxConfigGenerator:
             print(f"[Nginx] stdout: {e.stdout}")
             return False
 
-    def cleanup_configs(self, pattern: str = "sandbox-*") -> None:
-        configs = list(self.sites_available_dir.glob(pattern))
+    def cleanup_all(self) -> None:
+        configs = list(self.sites_available_dir.glob(f"{CONFIG_PREFIX}*"))
 
         if not configs:
-            print(f"[Nginx] No configs found matching pattern: {pattern}")
+            print("[Nginx] No sandbox configs to clean up")
             return
 
-        print(f"[Nginx] Found {len(configs)} config(s) to clean up")
+        print(f"[Nginx] Found {len(configs)} sandbox config(s) to clean up")
 
         for config_path in configs:
             self.delete_config(str(config_path))
 
-        if configs:
+        try:
             self.reload_nginx()
+        except RuntimeError as e:
+            print(f"[Nginx] Warning: Reload after cleanup failed: {e}")

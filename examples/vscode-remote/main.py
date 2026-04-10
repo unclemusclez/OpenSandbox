@@ -323,8 +323,20 @@ Examples:
         default=False,
         help="Generate nginx reverse proxy config with SSL termination",
     )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        default=False,
+        help="Remove all previously generated sandbox nginx configs and reload, then exit",
+    )
 
     args = parser.parse_args()
+
+    if args.cleanup:
+        nginx_gen = NginxConfigGenerator()
+        nginx_gen.cleanup_all()
+        print("Cleanup complete.")
+        return
 
     domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = args.api_key or os.getenv("SANDBOX_API_KEY")
@@ -390,12 +402,27 @@ Examples:
 
         if args.use_nginx:
             nginx_gen = NginxConfigGenerator()
-            nginx_gen.generate_combined_config(
-                instances=instances,
-                server_name=args.server_ip or "localhost",
-            )
+            server_name = args.server_ip or "localhost"
+            for inst in instances:
+                if not inst.cert_path or not inst.key_path:
+                    print(f"[Nginx] Skipping port {inst.port}: no SSL cert")
+                    continue
+
+                upstream_path = inst.upstream_path if inst.upstream_path else "/"
+                config_path = nginx_gen.generate_port_config(
+                    port=inst.port,
+                    server_name=server_name,
+                    upstream_host=inst.upstream_host,
+                    upstream_port=inst.upstream_port,
+                    upstream_path=upstream_path,
+                    cert_path=inst.cert_path,
+                    key_path=inst.key_path,
+                )
+                inst.nginx_config_path = config_path
+                nginx_gen.enable_config(config_path)
+
+            nginx_gen.test_config()
             nginx_gen.reload_nginx()
-            print("[Nginx] Combined config generated and nginx reloaded")
 
         print("\n" + "=" * 70)
         print("VS Code Web Endpoints")
@@ -441,9 +468,18 @@ Examples:
         if args.use_nginx and instances:
             nginx_gen = NginxConfigGenerator()
             try:
-                nginx_gen.cleanup_configs()
+                for inst in instances:
+                    if inst.nginx_config_path:
+                        try:
+                            nginx_gen.delete_config(inst.nginx_config_path)
+                        except Exception as e:
+                            print(f"  Note: Failed to delete nginx config for port {inst.port}: {e}")
+                try:
+                    nginx_gen.reload_nginx()
+                except Exception as e:
+                    print(f"  Note: Failed to reload nginx after cleanup: {e}")
             except Exception as e:
-                print(f"  Note: Failed to clean nginx configs: {e}")
+                print(f"  Note: Nginx cleanup error: {e}")
 
         for inst in instances:
             try:
