@@ -81,10 +81,13 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_cookie_path / /{port}/;
         
         # Explicitly handle the service worker to ensure the header is attached
+ 
         location ~* service-worker\.js$ {{
             proxy_pass http://127.0.0.1:{port};
             add_header Service-Worker-Allowed /;
-            # Prevent caching of the worker to avoid stale UI state
+            # Force the correct MIME type
+            default_type application/javascript;
+            add_header Content-Type application/javascript;
             add_header Cache-Control "no-cache";
         }}
 
