@@ -82,8 +82,7 @@ class SandboxInstance:
     port: int
     sandbox: Sandbox
     endpoint: str
-    upstream_port: int
-    upstream_path: str
+    upstream_url: str
     password: Optional[str] = None
 
 
@@ -108,23 +107,24 @@ def generate_password(length: int = 24) -> str:
 
 
 def parse_endpoint(endpoint_str: str) -> tuple[int, str]:
-    """Parse the server-returned endpoint to extract upstream port and path.
+    """Parse the server-returned endpoint to extract the port and upstream URL.
 
-    The server returns different formats based on its docker.network_mode:
-      host mode:   "127.0.0.1:8443"             -> (8443, "")
-      bridge mode: "127.0.0.1:55002/proxy/8443"  -> (55002, "/proxy/8443")
+    The endpoint string IS the proxy_pass target (minus the http:// prefix).
+    The port after the IP is used for the nginx location path.
+
+    Examples:
+      "127.0.0.1:8443"             -> (8443, "127.0.0.1:8443")
+      "127.0.0.1:55002/proxy/8443" -> (55002, "127.0.0.1:55002/proxy/8443")
 
     Returns:
-        (upstream_port, upstream_path)
+        (port, upstream_url)
     """
-    parts = endpoint_str.split("/", 1)
-    upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
-    host_port_part = parts[0]
+    host_port_part = endpoint_str.split("/", 1)[0]
     if ":" in host_port_part:
-        upstream_port = int(host_port_part.rsplit(":", 1)[1])
+        port = int(host_port_part.rsplit(":", 1)[1])
     else:
-        upstream_port = 80
-    return upstream_port, upstream_path
+        port = 80
+    return port, endpoint_str
 
 
 async def _print_logs(label: str, execution) -> None:
@@ -156,8 +156,8 @@ async def create_instance(
 
     endpoint = await sandbox.get_endpoint(port)
     endpoint_str = endpoint.endpoint
-    upstream_port, upstream_path = parse_endpoint(endpoint_str)
-    network_mode = "bridge" if upstream_path else "host"
+    endpoint_port, upstream_url = parse_endpoint(endpoint_str)
+    network_mode = "bridge" if "/" in endpoint_str else "host"
     print(
         f"[{user.label}] Endpoint: {endpoint_str} "
         f"(detected {network_mode} mode)"
@@ -176,7 +176,6 @@ async def create_instance(
 
     code_server_cmd = (
         f"code-server --bind-addr 0.0.0.0:{port} "
-        f"--base-path /{port}/ "
         f"{auth_flag} "
         f"--disable-telemetry "
         f"{workspace_path}"
@@ -195,11 +194,10 @@ async def create_instance(
 
     return SandboxInstance(
         user=user,
-        port=port,
+        port=endpoint_port,
         sandbox=sandbox,
         endpoint=endpoint_str,
-        upstream_port=upstream_port,
-        upstream_path=upstream_path,
+        upstream_url=upstream_url,
         password=password,
     )
 
@@ -387,14 +385,12 @@ Examples:
             )
 
             for inst in instances:
-                upstream_path = inst.upstream_path if inst.upstream_path else "/"
                 config_path = nginx_gen.generate_port_config(
                     port=inst.port,
-                    server_name=args.external_ip or "_",
-                    upstream_port=inst.upstream_port,
-                    upstream_path=upstream_path,
+                    upstream_url=inst.upstream_url,
                     cert_path=cert_path,
                     key_path=key_path,
+                    server_name=args.external_ip or "_",
                 )
                 nginx_gen.enable_config(config_path)
 
@@ -415,7 +411,7 @@ Examples:
                 ext_ip = args.external_ip or "localhost"
                 url = f"https://{ext_ip}/{inst.port}/"
             else:
-                url = f"http://{inst.endpoint}/"
+                url = f"http://{inst.upstream_url}/"
 
             print(f"    {inst.user.username}:")
             print(f"      URL: {url}")

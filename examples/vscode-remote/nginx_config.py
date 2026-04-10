@@ -17,25 +17,22 @@
 Nginx Configuration Generator for VS Code Remote Example
 
 Generates per-port nginx configs in /etc/nginx/sites-available/, symlinks them
-into /etc/nginx/sites-enabled/. Each port gets its own config file:
+into /etc/nginx/sites-enabled/. Each port gets its own config file.
 
-  sandbox-vscode-remote-{port}
-
-Location is always /{port}/, proxying to the full upstream endpoint.
-Bridge/host mode is auto-detected from the endpoint format.
+The endpoint URL from the server IS the proxy_pass target. We just prepend
+http:// and add the trailing slash. The port after the IP in the endpoint
+becomes the nginx location path.
 
   host mode:   endpoint 127.0.0.1:8443             -> location /8443/ -> proxy_pass http://127.0.0.1:8443/
-  bridge mode: endpoint 127.0.0.1:55002/proxy/8443  -> location /8443/ -> proxy_pass http://127.0.0.1:55002/proxy/8443/
+  bridge mode: endpoint 127.0.0.1:55002/proxy/8443  -> location /55002/ -> proxy_pass http://127.0.0.1:55002/proxy/8443/
 
 Usage:
     from nginx_config import NginxConfigGenerator
 
     generator = NginxConfigGenerator()
     path = generator.generate_port_config(
-        port=8443,
-        server_name="_",
-        upstream_port=55002,
-        upstream_path="/proxy/8443",
+        port=55002,
+        upstream_url="127.0.0.1:55002/proxy/8443",
         cert_path="/etc/nginx/ssl/vscode-remote.crt",
         key_path="/etc/nginx/ssl/vscode-remote.key",
     )
@@ -59,7 +56,7 @@ PORT_CONFIG_TEMPLATE = """server {{
     ssl_ciphers HIGH:!aNULL:!MD5;
 
     location /{port}/ {{
-        proxy_pass http://127.0.0.1:{upstream_port}{upstream_path};
+        proxy_pass http://{upstream_url}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -112,17 +109,15 @@ class NginxConfigGenerator:
     def generate_port_config(
         self,
         port: int,
-        server_name: str,
-        upstream_port: int,
-        upstream_path: str,
+        upstream_url: str,
         cert_path: str,
         key_path: str,
+        server_name: str = "_",
     ) -> str:
         config_content = PORT_CONFIG_TEMPLATE.format(
             port=port,
+            upstream_url=upstream_url,
             server_name=server_name,
-            upstream_port=upstream_port,
-            upstream_path=upstream_path,
             cert_path=cert_path,
             key_path=key_path,
         )
