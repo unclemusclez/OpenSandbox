@@ -1,26 +1,28 @@
-# Nginx Template Reference: Port-Based Location Blocks
+# Nginx Template Reference: Port-Based Reverse Proxy
 #
-# Each VS Code sandbox instance gets a location block keyed by its port.
-# The proxy_pass target depends on the server's docker.network_mode:
+# A single combined server block with one location per sandbox instance.
+# The location path mirrors the server-returned endpoint path:
 #
-#   host mode:   proxy_pass http://127.0.0.1:{port}/;
-#   bridge mode: proxy_pass http://127.0.0.1:{mapped_execd_port}/proxy/{port};
+#   host mode:   endpoint 127.0.0.1:8443             -> location /8443/              -> proxy_pass http://127.0.0.1:8443/
+#   bridge mode: endpoint 127.0.0.1:55002/proxy/8443  -> location /55002/proxy/8443/  -> proxy_pass http://127.0.0.1:55002/proxy/8443/
 #
-# Example (host mode, 2 users on ports 8443 and 8444):
+# Outside users access via https://{eip}/{location_path}
+#
+# Example (bridge mode, 2 users):
 
 server {
     listen 80;
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name <server_ip>;
+    server_name _;
 
     ssl_certificate /etc/nginx/ssl/port-8443.crt;
     ssl_certificate_key /etc/nginx/ssl/port-8443.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
-    location /8443/ {
-        proxy_pass http://127.0.0.1:8443/;
+    location /55002/proxy/8443/ {
+        proxy_pass http://127.0.0.1:55002/proxy/8443/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -38,8 +40,8 @@ server {
         proxy_request_buffering off;
     }
 
-    location /8444/ {
-        proxy_pass http://127.0.0.1:8444/;
+    location /54581/proxy/8444/ {
+        proxy_pass http://127.0.0.1:54581/proxy/8444/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";

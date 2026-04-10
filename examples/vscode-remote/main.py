@@ -80,7 +80,6 @@ class SandboxInstance:
     upstream_port: int
     upstream_path: str
     password: Optional[str] = None
-    nginx_config_path: Optional[str] = None
     cert_path: Optional[str] = None
     key_path: Optional[str] = None
 
@@ -105,15 +104,16 @@ def generate_password(length: int = 24) -> str:
     return secrets.token_urlsafe(length)
 
 
-def parse_endpoint(endpoint_str: str) -> tuple[str, int, str]:
+def parse_endpoint(endpoint_str: str) -> tuple[str, int, str, str]:
     """Parse the server-returned endpoint URL into nginx upstream components.
 
     The endpoint format depends on the server's docker.network_mode:
-      host mode:   "{ip}:{port}"                -> upstream 127.0.0.1:{port}/
-      bridge mode: "{ip}:{mapped_port}/proxy/{port}" -> upstream 127.0.0.1:{mapped_port}/proxy/{port}
+      host mode:   "{ip}:{port}"                    -> /{port}/
+      bridge mode: "{ip}:{mapped_port}/proxy/{port}" -> /{mapped_port}/proxy/{port}/
 
     Returns:
-        (upstream_host, upstream_port, upstream_path)
+        (upstream_host, upstream_port, upstream_path, url_path)
+        url_path is the nginx location + external path for this instance.
     """
     parts = endpoint_str.split("/", 1)
     upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
@@ -122,7 +122,13 @@ def parse_endpoint(endpoint_str: str) -> tuple[str, int, str]:
         upstream_port = int(host_port_part.rsplit(":", 1)[1])
     else:
         upstream_port = 80
-    return "127.0.0.1", upstream_port, upstream_path
+
+    if upstream_path:
+        url_path = f"/{upstream_port}{upstream_path}/"
+    else:
+        url_path = f"/{upstream_port}/"
+
+    return "127.0.0.1", upstream_port, upstream_path, url_path
 
 
 async def _print_logs(label: str, execution) -> None:
@@ -166,11 +172,13 @@ async def create_instance(
         server_ip = endpoint_host
         print(f"[{user.label}] Detected EIP: {server_ip}")
 
-    upstream_host, upstream_port, upstream_path = parse_endpoint(endpoint_str)
+    upstream_host, upstream_port, upstream_path, url_path = parse_endpoint(
+        endpoint_str
+    )
     network_mode = "bridge" if upstream_path else "host"
     print(
         f"[{user.label}] Endpoint: {endpoint_str} "
-        f"(detected {network_mode} mode -> {upstream_host}:{upstream_port}{upstream_path or '/'}"
+        f"(detected {network_mode} -> nginx location {url_path})"
     )
 
     workspace_path = f"/workspace/{user.workspace}"
@@ -220,7 +228,7 @@ async def create_instance(
         port=port,
         sandbox=sandbox,
         endpoint=endpoint_str,
-        url_path=f"/{port}/",
+        url_path=url_path,
         upstream_host=upstream_host,
         upstream_port=upstream_port,
         upstream_path=upstream_path,
@@ -399,27 +407,26 @@ Examples:
 
         if args.use_nginx:
             nginx_gen = NginxConfigGenerator()
-            server_name = args.server_ip or "localhost"
+            server_name = args.server_ip or "_"
+            cert_path = None
+            key_path = None
             for inst in instances:
-                if not inst.cert_path or not inst.key_path:
-                    print(f"[Nginx] Skipping port {inst.port}: no SSL cert")
-                    continue
+                if inst.cert_path and inst.key_path:
+                    cert_path = inst.cert_path
+                    key_path = inst.key_path
+                    break
 
-                upstream_path = inst.upstream_path if inst.upstream_path else "/"
-                config_path = nginx_gen.generate_port_config(
-                    port=inst.port,
+            if not cert_path or not key_path:
+                print("[Nginx] No SSL certificate available. Skipping nginx config.")
+            else:
+                nginx_gen.generate_config(
+                    instances=instances,
                     server_name=server_name,
-                    upstream_host=inst.upstream_host,
-                    upstream_port=inst.upstream_port,
-                    upstream_path=upstream_path,
-                    cert_path=inst.cert_path,
-                    key_path=inst.key_path,
+                    cert_path=cert_path,
+                    key_path=key_path,
                 )
-                inst.nginx_config_path = config_path
-                nginx_gen.enable_config(config_path)
-
-            nginx_gen.test_config()
-            nginx_gen.reload_nginx()
+                nginx_gen.test_config()
+                nginx_gen.reload_nginx()
 
         print("\n" + "=" * 70)
         print("VS Code Web Endpoints")
@@ -431,18 +438,15 @@ Examples:
                 current_group = inst.user.group
                 print(f"\n  Group: {current_group}")
 
-            protocol = "https" if args.use_nginx else "http"
-            server_host = args.server_ip or "localhost"
-
             if args.use_nginx:
-                url = f"{protocol}://{server_host}{inst.url_path}"
+                server_host = args.server_ip or "localhost"
+                url = f"https://{server_host}{inst.url_path}"
             else:
                 url = f"http://{inst.endpoint}/"
 
             print(f"    {inst.user.username}:")
             print(f"      URL: {url}")
             print(f"      Workspace: /workspace/{inst.user.workspace}")
-            print(f"      Port: {inst.port}")
             if inst.password:
                 print(f"      Password: {inst.password}")
 
@@ -462,19 +466,10 @@ Examples:
     finally:
         print("\nCleaning up...")
 
-        if args.use_nginx and instances:
+        if args.use_nginx:
             nginx_gen = NginxConfigGenerator()
             try:
-                for inst in instances:
-                    if inst.nginx_config_path:
-                        try:
-                            nginx_gen.delete_config(inst.nginx_config_path)
-                        except Exception as e:
-                            print(f"  Note: Failed to delete nginx config for port {inst.port}: {e}")
-                try:
-                    nginx_gen.reload_nginx()
-                except Exception as e:
-                    print(f"  Note: Failed to reload nginx after cleanup: {e}")
+                nginx_gen.cleanup_all()
             except Exception as e:
                 print(f"  Note: Nginx cleanup error: {e}")
 
