@@ -2,7 +2,7 @@
 
 Use this file for all work in `examples/vscode-remote/`. Reference template: `examples/vscode/`.
 This is a hackathon-focused multi-instance VS Code remote development tool with nginx
-reverse proxy, per-instance SSL (via openssl), groups support, and persistent workspace support.
+reverse proxy (SSL via mkcert/openssl), groups support, and persistent workspace bind mounts.
 
 ## Scope
 
@@ -12,45 +12,41 @@ reverse proxy, per-instance SSL (via openssl), groups support, and persistent wo
 ## Commands
 
 ```bash
-# One-time prerequisite installation (python3, nginx, docker, openssl, uv)
+# One-time prerequisite installation (python3, nginx, docker, mkcert, openssl)
 bash examples/vscode-remote/setup.sh
 
 # Lint
-uv run ruff check .
+pip run ruff check .
 
 # Format
-uv run ruff format .
+pip run ruff format .
 
 # Type check
-uv run pyright
+pip run pyright
 
-# Run all tests
-uv run pytest
+# Run: all groups from groups.yaml with nginx + SSL (default)
+python examples/vscode-remote/main.py --groups groups.yaml --external-ip 165.245.138.159
+
+# Run: single group
+python examples/vscode-remote/main.py --groups groups.yaml --group alpha --external-ip 1.2.3.4
+
+# Run: with secure per-user passwords
+python examples/vscode-remote/main.py --groups groups.yaml --secure --external-ip 1.2.3.4
+
+# Run: with persistent workspace bind mounts
+python examples/vscode-remote/main.py --groups groups.yaml --workspace-dir /vs-code-remote
+
+# Run: single instance without groups (like examples/vscode/main.py)
+python examples/vscode-remote/main.py
+
+# Run: direct HTTP without nginx
+python examples/vscode-remote/main.py --no-nginx
+
+# Cleanup all nginx configs
+python examples/vscode-remote/main.py --cleanup
 
 # Build Docker image
 docker build -t opensandbox/vscode:latest examples/vscode-remote/
-
-# Run: all groups from groups.yaml with nginx + SSL
-uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx
-
-# Run: single group
-uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha --use-nginx
-
-# Run: with secure per-user passwords
-uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx --secure
-
-# Run: single instance without groups (like examples/vscode/main.py)
-uv run python examples/vscode-remote/main.py --use-nginx
-
-# Run: bridge mode (must match server's docker.network_mode)
-uv run python examples/vscode-remote/main.py --groups groups.yaml --use-nginx --mode bridge
-
-# Run: with custom SSL dir and server IP for SAN
-uv run python examples/vscode-remote/main.py --use-nginx \
-    --ssl-dir ./certs --server-ip 165.245.140.250
-
-# Generate a single cert manually via openssl
-uv run python examples/vscode-remote/ssl_cert.py --port 8443 --ip 165.245.140.250
 ```
 
 ## Code Style
@@ -64,7 +60,9 @@ uv run python examples/vscode-remote/ssl_cert.py --port 8443 --ip 165.245.140.25
 ### Imports
 Order: stdlib → third-party → local:
 ```python
+import argparse
 import asyncio
+import os
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
@@ -73,6 +71,8 @@ import yaml
 
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
+from opensandbox.models.execd import RunCommandOpts
+from opensandbox.models.sandboxes import Host, Volume
 
 from nginx_config import NginxConfigGenerator
 from ssl_cert import SSLCertificateGenerator
@@ -108,16 +108,20 @@ Use `print()` with prefixed labels: `[{group}/{username}]`, `[Nginx]`, `[SSL]`
 
 ### Core Models
 - **`UserInfo` dataclass**: group, username, workspace (`{group}/{username}`), label
-- **`SandboxInstance` dataclass**: user, port, sandbox, endpoint, url_path (`/{port}/`),
-  upstream_host/port/path, password (if secure), cert/key paths
+- **`SandboxInstance` dataclass**: user, port, sandbox, endpoint, password (if secure)
 
 ### Key Classes
-- **`NginxConfigGenerator`**: generates a **single combined** nginx config with all location
-  blocks (one per port), manages sites-available/enabled symlinks, reloads nginx.
-  - `generate_combined_config(instances, server_name)` — writes one file with all `/{port}/` locations
-- **`SSLCertificateGenerator`**: generates self-signed certs via **openssl CLI** (no pip deps).
-  - `generate_cert_for_port(port, server_ip)` — cert named `port-{port}.crt`
-  - Embeds server IP in SAN to fix Service Worker SSL errors.
+- **`NginxConfigGenerator`**: generates **per-port individual** nginx config files in
+  `/etc/nginx/sites-available/`, symlinked to `/etc/nginx/sites-enabled/`, named
+  `sandbox-vscode-remote-{port}`. Each config has its own server block.
+  - `generate_port_config(port, cert_path, key_path, ca_cert_path)` — one file per port
+  - `enable_config(config_path)` — symlink to sites-enabled
+  - `cleanup_all()` — remove all `sandbox-vscode-remote-*` configs and reload
+- **`SSLCertificateGenerator`**: generates SSL certs via **mkcert** (preferred, CA-trusted)
+  with **openssl** fallback. Single shared cert for all instances. Filename includes hash
+  of IP so changing `--external-ip` triggers regeneration.
+  - `generate_server_cert(server_ip)` — returns (cert_path, key_path)
+  - `get_mkcert_ca_root()` — returns mkcert CA root dir path (or None)
 
 ### Groups YAML
 
@@ -132,18 +136,30 @@ groups:
       - dave
 ```
 
-Each user gets: sandbox instance → workspace at `/workspace/{group}/{username}` → URL at `https://{server_ip}/{port}/`
+Each user gets: sandbox instance → workspace at `/workspace/{group}/{username}` → URL at `https://{ip}/{endpoint_path}/`
 
-### Network Modes (must match server's `docker.network_mode`)
+### Network Modes (auto-detected from endpoint format)
 
-| Mode | Server Endpoint Format | Nginx proxy_pass |
-|------|----------------------|------------------|
-| **Host** | `{ip}:{port}` | `http://127.0.0.1:{port}/` |
-| **Bridge** | `{ip}:{mapped_port}/proxy/{port}` | `http://127.0.0.1:{mapped_port}/proxy/{port}` |
+| Mode | Server Endpoint Format | Nginx proxy_pass | Detected By |
+|------|----------------------|------------------|-------------|
+| **Host** | `127.0.0.1:8443` | `http://127.0.0.1:{port}/` | No `/` after port |
+| **Bridge** | `127.0.0.1:52322/proxy/8443` | `http://127.0.0.1:{port}/` | `/proxy/` in endpoint |
 
-The `--mode` flag must match the server's `[docker]` `network_mode` in `~/.sandbox.toml`:
-- `--mode host` when `network_mode = "host"` (default)
-- `--mode bridge` when `network_mode = "bridge"`
+Bridge/host mode is **auto-detected** from the server-returned endpoint format — NOT a CLI flag.
+The server's `~/.sandbox.toml` determines `docker.network_mode`.
+
+**Critical**: `proxy_pass` must NOT include upstream path. `proxy_pass http://127.0.0.1:{port}/;`
+is correct. The browser sends the full endpoint path (e.g., `/51111/proxy/8448/`), nginx strips
+`/{endpoint_port}/`, and the remainder reaches execd correctly.
+
+### Persistent Workspaces
+
+With `--workspace-dir /vs-code-remote`, each user gets a host bind mount:
+- Host path: `/vs-code-remote/{group}/{username}`
+- Container mount: `/workspace/{group}/{username}`
+- Implemented via SDK `Volume(name="workspace", host=Host(path=host_path), mount_path=workspace_path)`
+- Host directories are created with `os.makedirs()` before sandbox creation
+- Without `--workspace-dir`, workspace is created inside the container via `mkdir -p` (ephemeral)
 
 ### Security Modes
 
@@ -152,41 +168,49 @@ The `--mode` flag must match the server's `[docker]` `network_mode` in `~/.sandb
 | (default) | `--auth none` | None |
 | `--secure` | `--auth password` | Auto-generated per-user (24-char token) |
 
-### Certificate Flow (openssl, no cryptography library)
+### Certificate Flow
 
-1. On instance creation, `SSLCertificateGenerator` calls `openssl req -x509` via subprocess
-2. Config file is generated inline with SAN entries (IP + DNS names)
-3. Cert saved to `{ssl_dir}/port-{port}.crt`
-4. Nginx config references the first cert for SSL termination (all instances share port 443)
-5. code-server always runs **HTTP** inside containers; nginx terminates SSL externally
+1. **mkcert** (preferred): Generates CA-trusted certs. Filename includes IP hash.
+   - CA root must be installed on client browsers for trust
+   - CA cert served at `https://{ip}/ca.crt` for download
+2. **openssl** (fallback): Self-signed certs with IP in SAN
+3. Single shared cert for all instances on port 443
+4. code-server always runs **HTTP** inside containers; nginx terminates SSL externally
 
-### Nginx Template Features
-- Single server block listening on 80 + 443 ssl
-- One `location /{port}/` block per instance
+### Nginx Template Features (per-port config)
+- Individual server block per port, `server_name _;`
+- `listen 80;` and `listen 443 ssl;`
 - TLSv1.2 + TLSv1.3, `HIGH:!aNULL:!MD5` ciphers
 - WebSocket upgrade headers (`Upgrade`, `Connection "upgrade"`)
 - `X-Forwarded-For`, `X-Forwarded-Proto https`, `proxy_redirect off`
 - `add_header Service-Worker-Allowed /;` (fixes SW scope errors)
-- `proxy_ssl_verify off;` (backend is HTTP)
 - `proxy_read/send_timeout 86400` (24h for long-lived WS connections)
 - `proxy_buffering off; proxy_request_buffering off;` (real-time data)
+- Conditional `location = /ca.crt` block (only when mkcert CA root exists)
+
+### URL Display
+- HTTPS URL includes full endpoint path: `https://{ip}/{endpoint_path}/`
+  where endpoint_path strips `127.0.0.1:` prefix from the endpoint string
+- Example: endpoint `127.0.0.1:51111/proxy/8448` → URL `https://165.245.131.172/51111/proxy/8448/`
 
 ## Guardrails
 
 ### Must Always
-- Generate SSL certs on the **host** via openssl, never inside containers
+- Generate SSL certs on the **host** via mkcert/openssl, never inside containers
 - Clean up nginx configs + kill sandboxes in `finally` blocks
-- Use non-root `vscode` user in containers
 - Include Apache 2.0 header on every new file
-- Pass `--server-ip` when accessing via IP address (prevents SW SSL errors)
-- Match `--mode` to the server's `docker.network_mode` config
+- Use `--external-ip` when accessing via IP address (prevents SW SSL errors)
+- Auto-detect network mode from endpoint format, NOT from a CLI flag
+- Use `pip install` (not `uv`) — user's intentional choice
+- Use repo URL `https://github.com/unclemusclez/OpenSandbox.git` in setup.sh
 
 ### Must Never
 - Commit secrets, API keys, or `.key` files to the repository
 - Generate certs inside sandbox containers
 - Mix unrelated changes in one PR
-- Use the `cryptography` pip package (use openssl subprocess instead)
-- Mismatch `--mode` flag with server network mode (causes broken proxy_pass)
+- Use `--base-path` on code-server — it breaks the proxy chain (causes bad gateway)
+- Include upstream path in `proxy_pass` (causes path doubling)
+- Use `uv` for package management
 
 ### Known Gotchas
 
@@ -195,30 +219,40 @@ The `--mode` flag must match the server's `[docker]` `network_mode` in `~/.sandb
 SecurityError: Failed to register a ServiceWorker for scope ('https://{ip}/{path}/.../pre/')
 An SSL certificate error occurred when fetching the script.
 ```
-- **Root cause**: SW script fetch fails because the cert doesn't cover the target IP/domain
-- **Fix**: Pass `--server-ip <IP>` so the cert includes `IP:<ip>` in SAN extensions.
+- **Root cause**: Self-signed certs cause SW registration to fail
+- **Fix**: mkcert CA-trusted certs fix this on the host. Remote clients must download
+  and import the CA root from `https://{ip}/ca.crt`
 
-**Network mode mismatch**: If `--mode host` but server runs `network_mode = "bridge"`,
-the endpoint URL contains a mapped port + `/proxy/` path. The nginx config will proxy to
-the wrong upstream. Always match `--mode` to the server config.
+**proxy_pass path doubling**: `proxy_pass http://127.0.0.1:45960/proxy/8447/;` causes
+nginx to strip the location prefix then prepend the proxy_pass URI, doubling the path.
+Correct: `proxy_pass http://127.0.0.1:45960/;`
+
+**--base-path breaks proxy chain**: In bridge mode, execd strips `/proxy/{port}` before
+forwarding to code-server. If code-server has `--base-path /{port}/`, it expects `/8443/`
+but receives `/`, causing bad gateway. Do NOT use `--base-path`.
+
+**listen 80 default_server conflicts**: nginx's default site uses `default_server`.
+Must remove default site and use `listen 80;` without `default_server`.
+
+**GitHub cookie warnings**: `_gh_sess`, `_octo`, `logged_in` cookies are from VS Code
+extensions making cross-site requests to github.com — cannot be fixed server-side.
 
 **Environment Variables**:
 - `SANDBOX_DOMAIN` — server address (default: `localhost:8080`)
 - `SANDBOX_API_KEY` — optional API key
 - `SANDBOX_IMAGE` — Docker image (default: `opensandbox/vscode:latest`)
 - `PYTHON_VERSION` — Python version in sandbox (default: `3.11`)
-- `SSL_DIR` — override default `/etc/nginx/ssl`
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point; argparse CLI; groups loading; instance orchestration |
+| `main.py` | Entry point; argparse CLI; groups loading; instance orchestration; persistent workspaces |
 | `groups.yaml` | Groups and users configuration |
-| `setup.sh` | One-time install: python3, nginx, docker.io, docker-buildx, openssl, uv |
-| `nginx_config.py` | `NginxConfigGenerator`; combined config with port-based location blocks |
-| `ssl_cert.py` | `SSLCertificateGenerator`; openssl-based cert generation (no pip deps) |
-| `generate-certs.py` | Legacy mkcert helper (preserved for local dev with browser-trusted certs) |
+| `setup.sh` | One-time install: python3, nginx, docker.io, mkcert, openssl |
+| `nginx_config.py` | `NginxConfigGenerator`; per-port individual configs in sites-available |
+| `ssl_cert.py` | `SSLCertificateGenerator`; mkcert primary with openssl fallback |
+| `generate-certs.py` | Legacy mkcert helper (preserved for local dev) |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
 | `template.portnumber.available.md` | Nginx template reference showing port-based location blocks |
 | `../vscode/main.py` | Reference template: single-instance, minimal |

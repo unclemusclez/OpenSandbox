@@ -41,6 +41,9 @@ Usage:
     # Direct HTTP without nginx
     python examples/vscode-remote/main.py --no-nginx
 
+    # With persistent workspace bind mounts
+    python examples/vscode-remote/main.py --groups groups.yaml --workspace-dir /vs-code-remote
+
     # Cleanup all nginx configs
     python examples/vscode-remote/main.py --cleanup
 """
@@ -61,6 +64,7 @@ import yaml
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import RunCommandOpts
+from opensandbox.models.sandboxes import Host, Volume
 
 from nginx_config import NginxConfigGenerator
 from ssl_cert import SSLCertificateGenerator
@@ -160,14 +164,31 @@ async def create_instance(
     python_version: str,
     timeout: timedelta,
     secure: bool = False,
+    workspace_dir: Optional[str] = None,
 ) -> SandboxInstance:
     env = {"PYTHON_VERSION": python_version}
+
+    workspace_path = f"/workspace/{user.workspace}"
+
+    volumes: list[Volume] | None = None
+    if workspace_dir:
+        host_path = os.path.join(workspace_dir, user.workspace)
+        os.makedirs(host_path, exist_ok=True)
+        volumes = [
+            Volume(
+                name="workspace",
+                host=Host(path=host_path),
+                mount_path=workspace_path,
+            )
+        ]
+        print(f"[{user.label}] Bind-mounting {host_path} -> {workspace_path}")
 
     sandbox = await Sandbox.create(
         image,
         connection_config=config,
         env=env,
         timeout=timeout,
+        volumes=volumes,
     )
 
     endpoint = await sandbox.get_endpoint(port)
@@ -179,16 +200,15 @@ async def create_instance(
         f"(detected {network_mode} mode)"
     )
 
-    workspace_path = f"/workspace/{user.workspace}"
-
     password = None
     auth_flag = "--auth none"
     if secure:
         password = generate_password()
         auth_flag = "--auth password"
 
-    mkdir_cmd = f"mkdir -p {workspace_path}"
-    await sandbox.commands.run(mkdir_cmd)
+    if not volumes:
+        mkdir_cmd = f"mkdir -p {workspace_path}"
+        await sandbox.commands.run(mkdir_cmd)
 
     code_server_cmd = (
         f"code-server --bind-addr 0.0.0.0:{port} "
@@ -316,6 +336,13 @@ Examples:
         help="Disable nginx reverse proxy (use direct HTTP access)",
     )
     parser.add_argument(
+        "--workspace-dir",
+        type=str,
+        default=None,
+        help="Host directory for persistent workspace bind mounts (e.g. /vs-code-remote). "
+        "Each user gets {workspace_dir}/{group}/{username} mounted to /workspace/{group}/{username}",
+    )
+    parser.add_argument(
         "--cleanup",
         action="store_true",
         default=False,
@@ -366,6 +393,8 @@ Examples:
     print(f"  Nginx: {'Yes (HTTPS)' if use_nginx else 'No (direct HTTP)'}")
     if external_ip:
         print(f"  External IP: {external_ip}")
+    if args.workspace_dir:
+        print(f"  Workspace dir: {args.workspace_dir} (persistent bind mounts)")
     if args.groups:
         print(f"  Groups file: {args.groups}")
         if args.group:
@@ -393,6 +422,7 @@ Examples:
                     python_version=python_version,
                     timeout=sandbox_timeout,
                     secure=args.secure,
+                    workspace_dir=args.workspace_dir,
                 )
             )
 
@@ -453,6 +483,8 @@ Examples:
                 print(f"      URL: {https_url}")
             print(f"      Local: {http_url}")
             print(f"      Workspace: /workspace/{inst.user.workspace}")
+            if args.workspace_dir:
+                print(f"      Host path: {os.path.join(args.workspace_dir, inst.user.workspace)}")
             if inst.password:
                 print(f"      Password: {inst.password}")
 
