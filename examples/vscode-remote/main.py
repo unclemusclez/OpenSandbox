@@ -38,7 +38,7 @@ import random
 import re
 import string
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
@@ -133,12 +133,27 @@ async def create_instance(
     )
 
     endpoint = await sandbox.get_endpoint(port)
-    endpoint_host = endpoint.endpoint.split(":")[0]
+    endpoint_str = endpoint.endpoint
+    endpoint_host = endpoint_str.split(":")[0]
     is_eip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", endpoint_host))
 
     if is_eip and server_ip is None:
         server_ip = endpoint_host
         print(f"[Instance {instance_id}] Detected EIP: {server_ip}")
+
+    if mode == "host":
+        upstream_host = "127.0.0.1"
+        upstream_port = port
+        upstream_path = ""
+    else:
+        parts = endpoint_str.split("/", 1)
+        upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
+        host_port_part = parts[0]
+        if ":" in host_port_part:
+            upstream_port = int(host_port_part.rsplit(":", 1)[1])
+        else:
+            upstream_port = 80
+        upstream_host = "127.0.0.1"
 
     workspace_path = f"/workspace/{workspace}"
 
@@ -184,8 +199,9 @@ async def create_instance(
 
         nginx_config_path = nginx_gen.generate_config(
             server_name=server_name,
-            upstream_host="127.0.0.1",
-            upstream_port=port,
+            upstream_host=upstream_host,
+            upstream_port=upstream_port,
+            upstream_path=upstream_path,
             use_https=True,
             cert_path=cert_path,
             key_path=key_path,

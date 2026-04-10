@@ -60,7 +60,7 @@ class NginxConfigGenerator:
     server_name {server_name};
 
     location {location_path} {{
-        proxy_pass http://{upstream_host}:{upstream_port};
+        proxy_pass http://{upstream_host}:{upstream_port}{upstream_path};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -82,7 +82,7 @@ class NginxConfigGenerator:
     ssl_ciphers HIGH:!aNULL:!MD5;
 
     location {location_path} {{
-        proxy_pass http://{upstream_host}:{upstream_port}/;
+        proxy_pass http://{upstream_host}:{upstream_port}{upstream_path};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -134,6 +134,7 @@ class NginxConfigGenerator:
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
         location_path: Optional[str] = None,
+        upstream_path: str = "",
     ) -> str:
         """
         Generate nginx configuration file.
@@ -146,6 +147,7 @@ class NginxConfigGenerator:
             cert_path: Path to SSL certificate (required if use_https)
             key_path: Path to SSL key (required if use_https)
             location_path: URI path for location block (e.g., '/8443/' or '/abc12345/')
+            upstream_path: Path component for proxy_pass (e.g., '/proxy/8443' for bridge mode)
 
         Returns:
             Path to generated configuration file
@@ -169,10 +171,9 @@ class NginxConfigGenerator:
         # Select template
         template = self.HTTPS_TEMPLATE if use_https else self.HTTP_TEMPLATE
 
-        # Use provided location_path or default to root
         resolved_location = location_path or "/"
+        resolved_upstream_path = upstream_path if upstream_path else "/"
 
-        # Generate configuration content
         config_content = template.format(
             server_name=server_name,
             upstream_host=upstream_host,
@@ -180,6 +181,7 @@ class NginxConfigGenerator:
             cert_path=cert_path or "",
             key_path=key_path or "",
             location_path=resolved_location,
+            upstream_path=resolved_upstream_path,
         )
 
         # Write configuration file
@@ -376,6 +378,12 @@ def main():
         help="URI path for location block (e.g., '/8443/' or '/abc12345/')",
     )
     parser.add_argument(
+        "--upstream-path",
+        type=str,
+        default="",
+        help="Path component for proxy_pass (e.g., '/proxy/8443' for bridge mode)",
+    )
+    parser.add_argument(
         "--enable",
         action="store_true",
         help="Enable configuration after generation",
@@ -415,6 +423,7 @@ def main():
         cert_path=args.cert_path,
         key_path=args.key_path,
         location_path=args.location_path,
+        upstream_path=args.upstream_path,
     )
 
     # Enable configuration if requested

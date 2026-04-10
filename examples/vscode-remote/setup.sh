@@ -26,6 +26,7 @@ sudo apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
     python3-pip \
+    python-is-python3 \
     nginx \
     docker.io \
     docker-buildx \
@@ -43,10 +44,20 @@ sudo mkdir -p /etc/nginx/sites-enabled
 sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-available 2>/dev/null || true
 sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-enabled 2>/dev/null || true
 
-if ! command -v uv &>/dev/null; then
-    echo "[Setup] Installing uv (Python package manager)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
+
+> If you prefer working from source, you can still clone the repo for development, but you no longer need to clone this repository just to start the server.
+> You'll also require an instance of docker running.
+> ```bash
+git clone https://github.com/unclemusclez/OpenSandbox.git
+python -m venv ~/.venv
+. ~/.venv/bin/activate
+cd ~/OpenSandbox/server
+pip install .
+cp opensandbox_server/examples/example.config.toml ~/.sandbox.toml
+cd ~/OpenSandbox/cli
+pip install .
+#python -m opensandbox_server.main need a new script for server run.
+```
 
 echo "[Setup] Prerequisites installed successfully."
 echo "[Setup] SSL certs will be generated at: ${SSL_DIR}"
