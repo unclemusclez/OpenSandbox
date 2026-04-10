@@ -45,9 +45,7 @@ sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-available 2>/dev/null || 
 sudo chown -R "$(whoami)":"$(whoami)" /etc/nginx/sites-enabled 2>/dev/null || true
 
 
-> If you prefer working from source, you can still clone the repo for development, but you no longer need to clone this repository just to start the server.
-> You'll also require an instance of docker running.
-> ```bash
+echo "[Setup] Working from source..."
 git clone https://github.com/unclemusclez/OpenSandbox.git
 python -m venv ~/.venv
 . ~/.venv/bin/activate
@@ -56,8 +54,7 @@ pip install .
 cp opensandbox_server/examples/example.config.toml ~/.sandbox.toml
 cd ~/OpenSandbox/cli
 pip install .
-#python -m opensandbox_server.main need a new script for server run.
-```
+
 
 echo "[Setup] Prerequisites installed successfully."
 echo "[Setup] SSL certs will be generated at: ${SSL_DIR}"
