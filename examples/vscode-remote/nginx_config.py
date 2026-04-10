@@ -54,6 +54,12 @@ PORT_CONFIG_TEMPLATE = """server {{
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
+    location = /ca.crt {{
+        alias {ca_cert_path};
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="rootCA.crt"';
+    }}
+
     location /{port}/ {{
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
@@ -110,11 +116,13 @@ class NginxConfigGenerator:
         port: int,
         cert_path: str,
         key_path: str,
+        ca_cert_path: str = "",
     ) -> str:
         config_content = PORT_CONFIG_TEMPLATE.format(
             port=port,
             cert_path=cert_path,
             key_path=key_path,
+            ca_cert_path=ca_cert_path,
         )
 
         config_filename = f"{CONFIG_PREFIX}{port}"

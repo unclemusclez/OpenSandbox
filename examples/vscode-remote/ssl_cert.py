@@ -88,6 +88,9 @@ class SSLCertificateGenerator:
         except Exception:
             return None
 
+    def get_mkcert_ca_root(self) -> Optional[str]:
+        return self._get_mkcert_ca_root()
+
     def _install_mkcert_ca(self) -> bool:
         mkcert = self._find_mkcert()
         if not mkcert:

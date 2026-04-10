@@ -49,6 +49,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -406,11 +407,21 @@ Examples:
                 server_ip=external_ip,
             )
 
+            ca_cert_path = ""
+            ca_root = ssl_gen.get_mkcert_ca_root()
+            if ca_root:
+                ca_root_pem = os.path.join(ca_root, "rootCA.pem")
+                if os.path.exists(ca_root_pem):
+                    ca_serve_path = os.path.join(args.ssl_dir, "rootCA.pem")
+                    shutil.copy2(ca_root_pem, ca_serve_path)
+                    ca_cert_path = ca_serve_path
+
             for inst in instances:
                 config_path = nginx_gen.generate_port_config(
                     port=inst.port,
                     cert_path=cert_path,
                     key_path=key_path,
+                    ca_cert_path=ca_cert_path,
                 )
                 nginx_gen.enable_config(config_path)
 
@@ -446,6 +457,10 @@ Examples:
                 print(f"      Password: {inst.password}")
 
         print()
+        if use_nginx and ca_cert_path:
+            ext_ip = external_ip or "localhost"
+            print(f"  CA Certificate: https://{ext_ip}/ca.crt")
+            print("  (Download and import into browser to trust HTTPS)")
         print(
             f"Keeping sandboxes alive for {args.timeout} minutes. "
             f"Press Ctrl+C to exit sooner."
