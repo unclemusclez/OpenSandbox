@@ -101,14 +101,13 @@ func main() {
 
 	// start policy server
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
-	if err = startPolicyServer(ctx, proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow); err != nil {
+	policySrv, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow)
+	if err != nil {
 		log.Fatalf("failed to start policy server: %v", err)
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
 
-	<-ctx.Done()
-	log.Infof("received shutdown signal; exiting")
-	_ = os.Stderr.Sync()
+	waitForShutdown(ctx, proxy, policySrv, exemptDst, nftMgr)
 }
 
 func withLogger(ctx context.Context) context.Context {

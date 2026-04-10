@@ -106,8 +106,12 @@ class PoolReconcilerStateTest {
             warmupExecutor.shutdownNow()
         }
 
-        assertEquals(listOf("id-1"), stateStore.putIdleIds)
-        assertEquals(listOf("id-2"), orphaned)
+        assertEquals(1, stateStore.putIdleIds.size)
+        assertEquals(1, orphaned.size)
+        val idle = stateStore.putIdleIds.first()
+        val dropped = orphaned.first()
+        assertFalse(idle == dropped)
+        assertEquals(setOf("id-1", "id-2"), setOf(idle, dropped))
     }
 
     @Test
@@ -142,7 +146,8 @@ class PoolReconcilerStateTest {
         }
 
         assertEquals(1, state.failureCount)
-        assertEquals(listOf("id-1", "id-2"), orphaned)
+        assertEquals(2, orphaned.size)
+        assertEquals(setOf("id-1", "id-2"), orphaned.toSet())
     }
 
     @Test

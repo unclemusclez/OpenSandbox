@@ -45,9 +45,15 @@ type Proxy struct {
 	alwaysDeny              []policy.EgressRule
 	alwaysAllow             []policy.EgressRule
 	listenAddr              string
-	upstreams               []string // ordered resolver chain; try next on forward failure
+	upstreams               []string // ordered resolver chain from discovery (immutable after New)
+	upstreamMu              sync.RWMutex
+	activeUpstreams         []string // healthy subset; same order as upstreams; used for forwarding
+	upstreamProbeName       string   // wire name for probe (FQDN or "." for root)
+	upstreamProbeQType      uint16   // dns.TypeA or dns.TypeNS etc.
+	upstreamProbeInterval   time.Duration
 	upstreamExchangeTimeout time.Duration
 	servers                 []*dns.Server
+	shutdownOnce            sync.Once
 
 	// optional; called in goroutine when A/AAAA are present
 	onResolved func(domain string, ips []nftables.ResolvedIP)
@@ -70,9 +76,14 @@ func New(p *policy.NetworkPolicy, listenAddr string, alwaysDeny, alwaysAllow []p
 	if err != nil {
 		return nil, err
 	}
+	probeName, probeQType := upstreamProbeFromEnv()
 	proxy := &Proxy{
 		listenAddr:              listenAddr,
 		upstreams:               upstreams,
+		activeUpstreams:         append([]string(nil), upstreams...),
+		upstreamProbeName:       probeName,
+		upstreamProbeQType:      probeQType,
+		upstreamProbeInterval:   upstreamProbeIntervalFromEnv(),
 		upstreamExchangeTimeout: upstreamExchangeTimeoutFromEnv(),
 		userPolicy:              ensurePolicyDefaults(p),
 		alwaysDeny:              append([]policy.EgressRule(nil), alwaysDeny...),
@@ -118,21 +129,31 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}()
 	}
 
-	// Shutdown on context done
-	go func() {
-		<-ctx.Done()
-		for _, srv := range p.servers {
-			_ = srv.Shutdown()
-		}
-	}()
-
+	timer := time.NewTimer(200 * time.Millisecond)
+	defer timer.Stop()
 	select {
 	case err := <-errCh:
 		return fmt.Errorf("dns proxy failed: %w", err)
-	case <-time.After(200 * time.Millisecond):
-		// small grace window; running fine
-		return nil
+	case <-timer.C:
+		// listeners bound; start upstream probes only after DNS servers are up
 	}
+
+	go p.runUpstreamProbes(ctx)
+
+	return nil
+}
+
+// Shutdown stops UDP/TCP DNS listeners. Safe to call more than once.
+func (p *Proxy) Shutdown() error {
+	var outErr error
+	p.shutdownOnce.Do(func() {
+		for _, srv := range p.servers {
+			if e := srv.Shutdown(); e != nil && outErr == nil {
+				outErr = e
+			}
+		}
+	})
+	return outErr
 }
 
 func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
@@ -188,8 +209,9 @@ func (p *Proxy) maybeNotifyResolved(domain string, resp *dns.Msg) {
 }
 
 func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, error) {
+	list := p.forwardUpstreams()
 	var lastErr error
-	for i, upstream := range p.upstreams {
+	for i, upstream := range list {
 		c := &dns.Client{
 			Timeout: p.upstreamExchangeTimeout,
 			Dialer:  p.dialerForUpstream(upstream),
@@ -204,7 +226,7 @@ func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, error) {
 			lastErr = fmt.Errorf("nil response from %s", upstream)
 			continue
 		}
-		if tryNext, reason := p.shouldFailoverAfterResponse(resp, i); tryNext {
+		if tryNext, reason := p.shouldFailoverAfterResponse(resp, i, len(list)); tryNext {
 			lastErr = fmt.Errorf("%s from %s", reason, upstream)
 			log.Warnf("[dns] upstream %s: %s; trying next", upstream, reason)
 			continue
@@ -220,7 +242,7 @@ func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, error) {
 // shouldFailoverAfterResponse returns whether to try the next upstream.
 // NXDOMAIN is not retried. NOERROR with an empty Answer (NODATA) is retried when another upstream exists:
 // a broken or non-recursive first hop may return empty NOERROR while a public resolver succeeds.
-func (p *Proxy) shouldFailoverAfterResponse(resp *dns.Msg, upstreamIdx int) (tryNext bool, reason string) {
+func (p *Proxy) shouldFailoverAfterResponse(resp *dns.Msg, upstreamIdx, upstreamCount int) (tryNext bool, reason string) {
 	if resp == nil {
 		return true, "nil response"
 	}
@@ -228,7 +250,7 @@ func (p *Proxy) shouldFailoverAfterResponse(resp *dns.Msg, upstreamIdx int) (try
 	case dns.RcodeNameError:
 		return false, ""
 	case dns.RcodeSuccess:
-		if len(resp.Answer) == 0 && upstreamIdx < len(p.upstreams)-1 {
+		if len(resp.Answer) == 0 && upstreamIdx < upstreamCount-1 {
 			return true, "empty NOERROR"
 		}
 		return false, ""
@@ -241,12 +263,13 @@ func (p *Proxy) shouldFailoverAfterResponse(resp *dns.Msg, upstreamIdx int) (try
 	}
 }
 
-// UpstreamHost returns the host part of the first upstream resolver, empty on parse error.
+// UpstreamHost returns the host part of the first upstream resolver used for forwarding, empty on parse error.
 func (p *Proxy) UpstreamHost() string {
-	if len(p.upstreams) == 0 {
+	list := p.forwardUpstreams()
+	if len(list) == 0 {
 		return ""
 	}
-	host, _, err := net.SplitHostPort(p.upstreams[0])
+	host, _, err := net.SplitHostPort(list[0])
 	if err != nil {
 		return ""
 	}
@@ -257,15 +280,17 @@ func (p *Proxy) UpstreamHost() string {
 // Passing nil reverts to the default deny-all policy.
 func (p *Proxy) UpdatePolicy(newPolicy *policy.NetworkPolicy) {
 	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+
 	p.userPolicy = ensurePolicyDefaults(newPolicy)
 	p.refreshEffectivePolicy()
-	p.policyMu.Unlock()
 }
 
 // CurrentPolicy returns the user policy (POST/PATCH/GET), not the always-deny/allow overlay.
 func (p *Proxy) CurrentPolicy() *policy.NetworkPolicy {
 	p.policyMu.RLock()
 	defer p.policyMu.RUnlock()
+
 	return p.userPolicy
 }
 
