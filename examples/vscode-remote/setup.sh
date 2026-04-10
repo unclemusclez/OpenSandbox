@@ -63,9 +63,9 @@ sudo mkcert -install 2>/dev/null || mkcert -install 2>/dev/null || {
 CAROOT=$(mkcert -caroot 2>/dev/null || true)
 
 echo "[Setup] Working from source..."
-cd ~/
-git clone https://github.com/unclemusclez/OpenSandbox.git
-cd OpenSandbox/examples/vscode
+#
+#git clone https://github.com/unclemusclez/OpenSandbox.git
+cd ~/OpenSandbox/examples/vscode
 docker build -t opensandbox/vscode:latest .
 python -m venv ~/.venv
 . ~/.venv/bin/activate
