@@ -64,7 +64,7 @@ class SSLCertificateGenerator:
             return False
         try:
             result = subprocess.run(
-                [mkcert, "-caroot"],
+                [mkcert, "-CAROOT"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -81,7 +81,7 @@ class SSLCertificateGenerator:
             return None
         try:
             result = subprocess.run(
-                [mkcert, "-caroot"],
+                [mkcert, "-CAROOT"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -89,9 +89,9 @@ class SSLCertificateGenerator:
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
             if result.stderr.strip():
-                print(f"[SSL] mkcert -caroot failed (rc={result.returncode}): {result.stderr.strip()}")
+                print(f"[SSL] mkcert -CAROOT failed (rc={result.returncode}): {result.stderr.strip()}")
         except Exception as e:
-            print(f"[SSL] mkcert -caroot error: {e}")
+            print(f"[SSL] mkcert -CAROOT error: {e}")
         return self._find_ca_root_fallback()
 
     def get_mkcert_ca_root(self) -> Optional[str]:
