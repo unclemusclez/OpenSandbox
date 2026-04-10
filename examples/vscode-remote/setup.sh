@@ -28,6 +28,7 @@ sudo apt-get install -y --no-install-recommends \
     python3-pip \
     python-is-python3 \
     nginx \
+    mkcert \
     docker.io \
     docker-buildx \
     openssl \
@@ -56,6 +57,9 @@ cp opensandbox_server/examples/example.config.toml ~/.sandbox.toml
 cd ~/OpenSandbox/cli
 pip install .
 
+echo "[Setup] Installing mkcert CA..."
+mkcert -install 2>/dev/null || echo "[Setup] Warning: mkcert CA install failed (may need sudo)"
+
 echo "[Setup] Prerequisites installed successfully."
 echo "[Setup] SSL certs will be generated at: ${SSL_DIR}"
-echo "[Setup] To run: cd ${SCRIPT_DIR} && uv run python main.py --instances 1 --use-nginx"
+echo "[Setup] To run: cd ${SCRIPT_DIR} && uv run python main.py --groups groups.yaml --external-ip <YOUR_IP>"
