@@ -43,6 +43,14 @@ import subprocess
 from pathlib import Path
 
 
+CA_LOCATION_BLOCK = """    location = /ca.crt {{
+        alias {ca_cert_path};
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="rootCA.crt"';
+    }}
+
+"""
+
 PORT_CONFIG_TEMPLATE = """server {{
     listen 80;
     listen 443 ssl;
@@ -54,13 +62,7 @@ PORT_CONFIG_TEMPLATE = """server {{
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
-    location = /ca.crt {{
-        alias {ca_cert_path};
-        default_type application/x-x509-ca-cert;
-        add_header Content-Disposition 'attachment; filename="rootCA.crt"';
-    }}
-
-    location /{port}/ {{
+{ca_location}    location /{port}/ {{
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -118,11 +120,15 @@ class NginxConfigGenerator:
         key_path: str,
         ca_cert_path: str = "",
     ) -> str:
+        ca_location = ""
+        if ca_cert_path:
+            ca_location = CA_LOCATION_BLOCK.format(ca_cert_path=ca_cert_path)
+
         config_content = PORT_CONFIG_TEMPLATE.format(
             port=port,
             cert_path=cert_path,
             key_path=key_path,
-            ca_cert_path=ca_cert_path,
+            ca_location=ca_location,
         )
 
         config_filename = f"{CONFIG_PREFIX}{port}"
