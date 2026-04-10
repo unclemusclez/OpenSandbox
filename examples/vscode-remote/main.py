@@ -105,12 +105,16 @@ def generate_password(length: int = 24) -> str:
     return secrets.token_urlsafe(length)
 
 
-def parse_endpoint(
-    endpoint_str: str, mode: str, port: int
-) -> tuple[str, int, str]:
-    if mode == "host":
-        return "127.0.0.1", port, ""
+def parse_endpoint(endpoint_str: str) -> tuple[str, int, str]:
+    """Parse the server-returned endpoint URL into nginx upstream components.
 
+    The endpoint format depends on the server's docker.network_mode:
+      host mode:   "{ip}:{port}"                -> upstream 127.0.0.1:{port}/
+      bridge mode: "{ip}:{mapped_port}/proxy/{port}" -> upstream 127.0.0.1:{mapped_port}/proxy/{port}
+
+    Returns:
+        (upstream_host, upstream_port, upstream_path)
+    """
     parts = endpoint_str.split("/", 1)
     upstream_path = f"/{parts[1]}" if len(parts) > 1 else ""
     host_port_part = parts[0]
@@ -137,7 +141,6 @@ async def create_instance(
     image: str,
     python_version: str,
     timeout: timedelta,
-    mode: str = "host",
     secure: bool = False,
     ssl_dir: str = "/etc/nginx/ssl",
     server_ip: Optional[str] = None,
@@ -163,8 +166,11 @@ async def create_instance(
         server_ip = endpoint_host
         print(f"[{user.label}] Detected EIP: {server_ip}")
 
-    upstream_host, upstream_port, upstream_path = parse_endpoint(
-        endpoint_str, mode, port
+    upstream_host, upstream_port, upstream_path = parse_endpoint(endpoint_str)
+    network_mode = "bridge" if upstream_path else "host"
+    print(
+        f"[{user.label}] Endpoint: {endpoint_str} "
+        f"(detected {network_mode} mode -> {upstream_host}:{upstream_port}{upstream_path or '/'}"
     )
 
     workspace_path = f"/workspace/{user.workspace}"
@@ -202,7 +208,7 @@ async def create_instance(
     cert_path = None
     key_path = None
 
-    if server_ip or mode == "host":
+    if server_ip:
         ssl_gen = SSLCertificateGenerator(output_dir=ssl_dir)
         cert_path, key_path = ssl_gen.generate_cert_for_port(
             port=port,
@@ -293,13 +299,6 @@ Examples:
         help="Python version for the sandbox (default: 3.11)",
     )
     parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["bridge", "host"],
-        default="host",
-        help="Network mode matching server config: host or bridge (default: host)",
-    )
-    parser.add_argument(
         "--secure",
         action="store_true",
         default=False,
@@ -361,7 +360,6 @@ Examples:
     print(f"Starting {total} VS Code sandbox instance(s)...")
     print(f"  Domain: {domain}")
     print(f"  Image: {image}")
-    print(f"  Mode: {args.mode}")
     print(f"  Port range: {port_range}")
     print(f"  Secure: {'Yes (per-user passwords)' if args.secure else 'No (--auth none)'}")
     print(f"  Nginx: {'Yes' if args.use_nginx else 'No'}")
@@ -391,7 +389,6 @@ Examples:
                     image=image,
                     python_version=python_version,
                     timeout=sandbox_timeout,
-                    mode=args.mode,
                     secure=args.secure,
                     ssl_dir=args.ssl_dir,
                     server_ip=args.server_ip,
