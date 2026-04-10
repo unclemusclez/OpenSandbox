@@ -9,8 +9,9 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Host $http_host;
-#       proxy_pass 'http://127.0.0.1:59580/proxy/8443'        
-#       proxy_pass 'http://127.0.0.1:8443';
+        # Depending on 
+        # proxy_pass 'http://127.0.0.1:59580/proxy/8443';        
+        # proxy_pass 'http://127.0.0.1:8443';
         proxy_pass 'http://127.0.0.1:<portnumber>';
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
