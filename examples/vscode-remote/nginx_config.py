@@ -67,32 +67,34 @@ from pathlib import Path
 # """
 
 LOCATION_BLOCK = """    location /{port}/ {{
+        # Ensure Nginx uses the standard mime types list
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
-        
-        # 1. Fix the Service Worker registration and MIME types
-        location ~* (service-worker\.js|.*\.js|.*\.wasm)$ {{
+
+        # Force correct types for modules and workers
+        location ~* \\.js$ {{
             proxy_pass http://127.0.0.1:{port};
+            add_header Content-Type application/javascript;
             add_header Service-Worker-Allowed /;
-            add_header X-Content-Type-Options nosniff;
-            # Ensure JS and WASM have correct types for the Service Worker to install
-            if ($request_filename ~* \.js$) {{ set $m_type "application/javascript"; }}
-            if ($request_filename ~* \.wasm$) {{ set $m_type "application/wasm"; }}
-            add_header Content-Type $m_type;
         }}
 
-        # 2. Prevent Nginx from blocking the virtual 'vscode-resource' queries
+        location ~* \\.wasm$ {{
+            proxy_pass http://127.0.0.1:{port};
+            add_header Content-Type application/wasm;
+        }}
+
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-
-        # 3. Handle large headers (VS Code URIs can be extremely long)
-        proxy_buffer_size 128k;
-        proxy_buffers 4 256k;
-        proxy_busy_buffers_size 256k;
+        
+        # This header is often required for VS Code's internal CSP to pass
+        add_header X-Content-Type-Options nosniff;
     }}
 """
 
