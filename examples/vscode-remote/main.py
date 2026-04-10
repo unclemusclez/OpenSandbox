@@ -428,9 +428,10 @@ Examples:
                 print(f"\n  Group: {current_group}")
 
             ext_ip = external_ip or "localhost"
+            endpoint_path = inst.endpoint.split(":", 1)[1] if ":" in inst.endpoint else inst.endpoint
 
             if use_nginx:
-                https_url = f"https://{ext_ip}/{inst.endpoint}/"
+                https_url = f"https://{ext_ip}/{endpoint_path}/"
             else:
                 https_url = None
 
