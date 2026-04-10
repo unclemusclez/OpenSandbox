@@ -46,6 +46,78 @@ class SSLCertificateGenerator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    def generate_server_cert(
+        self,
+        server_ip: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Generate a single shared self-signed cert for the whole instance.
+
+        Args:
+            server_ip: External IP to add as SAN (fixes Service Worker SSL errors)
+
+        Returns:
+            Tuple of (cert_path, key_path)
+        """
+        name = "vscode-remote"
+        cert_file = self.output_dir / f"{name}.crt"
+        key_file = self.output_dir / f"{name}.key"
+
+        if cert_file.exists() and key_file.exists():
+            print(f"[SSL] Reusing existing cert: {cert_file}")
+            return str(cert_file), str(key_file)
+
+        print("[SSL] Generating shared server cert...")
+
+        san_parts = ["DNS:localhost"]
+        if server_ip:
+            san_parts.insert(0, f"IP:{server_ip}")
+        san_str = ",".join(san_parts)
+
+        conf_content = f"""[req]
+default_bits = {self.KEY_SIZE}
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = vscode-remote
+
+[v3_req]
+subjectAltName = {san_str}
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+"""
+
+        conf_file = self.output_dir / f"{name}.conf"
+        conf_file.write_text(conf_content)
+
+        try:
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-nodes",
+                    "-days", str(self.CERT_VALIDITY_DAYS),
+                    "-newkey", f"rsa:{self.KEY_SIZE}",
+                    "-keyout", str(key_file),
+                    "-out", str(cert_file),
+                    "-config", str(conf_file),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            os.chmod(key_file, 0o600)
+            print(f"[SSL] Certificate saved: {cert_file}")
+            print(f"[SSL] Key saved: {key_file}")
+            return str(cert_file), str(key_file)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to generate SSL cert: {e.stderr}"
+            ) from e
+        finally:
+            conf_file.unlink(missing_ok=True)
+
     def generate_cert_for_port(
         self,
         port: int,
