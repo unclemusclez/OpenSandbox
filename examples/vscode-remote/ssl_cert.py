@@ -69,9 +69,11 @@ class SSLCertificateGenerator:
                 text=True,
                 check=False,
             )
-            return result.returncode == 0
+            if result.returncode == 0 and result.stdout.strip():
+                return True
         except Exception:
-            return False
+            pass
+        return self._find_ca_root_fallback() is not None
 
     def _get_mkcert_ca_root(self) -> Optional[str]:
         mkcert = self._find_mkcert()
@@ -82,14 +84,37 @@ class SSLCertificateGenerator:
                 [mkcert, "-caroot"],
                 capture_output=True,
                 text=True,
-                check=True,
+                check=False,
             )
-            return result.stdout.strip()
-        except Exception:
-            return None
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            if result.stderr.strip():
+                print(f"[SSL] mkcert -caroot failed (rc={result.returncode}): {result.stderr.strip()}")
+        except Exception as e:
+            print(f"[SSL] mkcert -caroot error: {e}")
+        return self._find_ca_root_fallback()
 
     def get_mkcert_ca_root(self) -> Optional[str]:
         return self._get_mkcert_ca_root()
+
+    @staticmethod
+    def _find_ca_root_fallback() -> Optional[str]:
+        """Find mkcert CA root by checking common locations."""
+        caroot_env = os.environ.get("CAROOT")
+        if caroot_env and Path(caroot_env, "rootCA.pem").exists():
+            return caroot_env
+
+        home = Path.home()
+        candidates = [
+            home / ".local" / "share" / "mkcert",
+            Path("/root/.local/share/mkcert"),
+            home / "Library" / "Application Support" / "mkcert",
+        ]
+        for candidate in candidates:
+            if (candidate / "rootCA.pem").exists():
+                return str(candidate)
+
+        return None
 
     def _install_mkcert_ca(self) -> bool:
         mkcert = self._find_mkcert()

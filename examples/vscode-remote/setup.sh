@@ -81,6 +81,7 @@ echo ""
 echo "[Setup] Next steps:"
 echo "  1. Start the server:  opensandbox-server"
 echo "  2. In another terminal, run:"
+echo "     . ~/.venv/bin/activate"
 echo "     python ${SCRIPT_DIR}/main.py --groups ${SCRIPT_DIR}/groups.yaml --external-ip <YOUR_IP>"
 if [ -n "$CAROOT" ]; then
     echo ""
