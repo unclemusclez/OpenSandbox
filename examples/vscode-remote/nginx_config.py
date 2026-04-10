@@ -67,7 +67,7 @@ from pathlib import Path
 # """
 
 LOCATION_BLOCK = """    location /{port}/ {{
-        # Ensure Nginx uses the standard mime types list
+        # Load standard types and set a fallback
         include /etc/nginx/mime.types;
         default_type application/octet-stream;
 
@@ -77,7 +77,7 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
 
-        # Force correct types for modules and workers
+        # Force correct MIME types for JS modules and WASM
         location ~* \\.js$ {{
             proxy_pass http://127.0.0.1:{port};
             add_header Content-Type application/javascript;
@@ -93,7 +93,7 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # This header is often required for VS Code's internal CSP to pass
+        # Security header that prevents the browser from guessing types
         add_header X-Content-Type-Options nosniff;
     }}
 """
