@@ -73,29 +73,26 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
         
-        # Explicit block for the service worker
-        location ~* service-worker\.js$ {{
+        # 1. Fix the Service Worker registration and MIME types
+        location ~* (service-worker\.js|.*\.js|.*\.wasm)$ {{
             proxy_pass http://127.0.0.1:{port};
             add_header Service-Worker-Allowed /;
-            add_header Content-Type application/javascript;
-            add_header Cache-Control "no-store, no-cache, must-revalidate";
+            add_header X-Content-Type-Options nosniff;
+            # Ensure JS and WASM have correct types for the Service Worker to install
+            if ($request_filename ~* \.js$) {{ set $m_type "application/javascript"; }}
+            if ($request_filename ~* \.wasm$) {{ set $m_type "application/wasm"; }}
+            add_header Content-Type $m_type;
         }}
 
-        location ~* \.wasm$ {{
-            proxy_pass http://127.0.0.1:{port};
-            default_type application/wasm;
-            add_header Content-Type application/wasm;
-        }}
-
-        # Add headers to the main block as well
-        add_header Service-Worker-Allowed /;
+        # 2. Prevent Nginx from blocking the virtual 'vscode-resource' queries
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # Disable buffering for webviews to prevent partial loads
-        proxy_buffering off;
-        proxy_request_buffering off;
+
+        # 3. Handle large headers (VS Code URIs can be extremely long)
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
     }}
 """
 
