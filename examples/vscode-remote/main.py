@@ -445,6 +445,11 @@ Examples:
                     ca_serve_path = os.path.join(args.ssl_dir, "rootCA.pem")
                     shutil.copy2(ca_root_pem, ca_serve_path)
                     ca_cert_path = ca_serve_path
+                    print(f"[SSL] CA cert available at https://{external_ip or 'localhost'}/ca.crt")
+                else:
+                    print(f"[SSL] Warning: mkcert CA root dir exists but no rootCA.pem in {ca_root}")
+            else:
+                print("[SSL] No mkcert CA root found (ca.crt download unavailable — install mkcert for browser-trusted certs)")
 
             for inst in instances:
                 config_path = nginx_gen.generate_port_config(

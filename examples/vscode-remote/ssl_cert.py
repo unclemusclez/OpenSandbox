@@ -114,6 +114,34 @@ class SSLCertificateGenerator:
             return f"vscode-remote-{san_hash}"
         return "vscode-remote"
 
+    def _cert_has_san(self, cert_path: Path, server_ip: str) -> bool:
+        """Check if existing cert contains the requested IP in its SAN extension."""
+        try:
+            result = subprocess.run(
+                ["openssl", "x509", "-in", str(cert_path), "-noout", "-ext", "subjectAltName"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return server_ip in result.stdout
+        except Exception:
+            return False
+
+    def _find_existing_cert(self, name: str) -> tuple[Optional[Path], Optional[Path]]:
+        cert_file = None
+        key_file = None
+        for ext in (".pem", ".crt"):
+            p = self.output_dir / f"{name}{ext}"
+            if p.exists():
+                cert_file = p
+                break
+        for ext in ("-key.pem", ".key"):
+            p = self.output_dir / f"{name}{ext}"
+            if p.exists():
+                key_file = p
+                break
+        return cert_file, key_file
+
     def generate_server_cert(
         self,
         server_ip: Optional[str] = None,
@@ -134,12 +162,19 @@ class SSLCertificateGenerator:
         """
         name = self._cert_name(server_ip)
 
-        cert_file = self.output_dir / f"{name}.pem"
-        key_file = self.output_dir / f"{name}-key.pem"
+        cert_file, key_file = self._find_existing_cert(name)
 
-        if cert_file.exists() and key_file.exists():
-            print(f"[SSL] Reusing existing cert: {cert_file}")
-            return str(cert_file), str(key_file)
+        if cert_file and key_file:
+            if server_ip and not self._cert_has_san(cert_file, server_ip):
+                print(f"[SSL] Existing cert missing IP={server_ip} in SAN, regenerating")
+                cert_file.unlink()
+                key_file.unlink(missing_ok=True)
+            else:
+                print(f"[SSL] Reusing existing cert: {cert_file}")
+                return str(cert_file), str(key_file)
+
+        cert_file = cert_file or self.output_dir / f"{name}.pem"
+        key_file = key_file or self.output_dir / f"{name}-key.pem"
 
         mkcert = self._find_mkcert()
         if mkcert:
@@ -210,8 +245,13 @@ class SSLCertificateGenerator:
         key_file = self.output_dir / f"{name}.key"
 
         if cert_file.exists() and key_file.exists():
-            print(f"[SSL] Reusing existing cert: {cert_file}")
-            return str(cert_file), str(key_file)
+            if server_ip and not self._cert_has_san(cert_file, server_ip):
+                print(f"[SSL] Existing openssl cert missing IP={server_ip} in SAN, regenerating")
+                cert_file.unlink()
+                key_file.unlink(missing_ok=True)
+            else:
+                print(f"[SSL] Reusing existing cert: {cert_file}")
+                return str(cert_file), str(key_file)
 
         print("[SSL] Generating self-signed cert via openssl...")
 
