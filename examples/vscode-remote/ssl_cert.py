@@ -19,8 +19,11 @@ SSL Certificate Generator for VS Code Remote Example
 Uses mkcert (preferred) to generate CA-trusted certificates that browsers
 accept without warnings. Falls back to openssl if mkcert is not installed.
 
-mkcert certs fix Service Worker SSL errors because the browser trusts
-the local CA that mkcert installs.
+The external IP is encoded in the cert filename so changing --external-ip
+triggers regeneration with the new IP in the SAN.
+
+For remote access, clients must trust the mkcert CA. After generation,
+the CA root path is printed so users can copy it to client machines.
 
 Usage:
     from ssl_cert import SSLCertificateGenerator
@@ -29,6 +32,7 @@ Usage:
     cert, key = gen.generate_server_cert(server_ip="165.245.138.159")
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -69,6 +73,21 @@ class SSLCertificateGenerator:
         except Exception:
             return False
 
+    def _get_mkcert_ca_root(self) -> Optional[str]:
+        mkcert = self._find_mkcert()
+        if not mkcert:
+            return None
+        try:
+            result = subprocess.run(
+                [mkcert, "-caroot"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None
+
     def _install_mkcert_ca(self) -> bool:
         mkcert = self._find_mkcert()
         if not mkcert:
@@ -85,6 +104,13 @@ class SSLCertificateGenerator:
             print(f"[SSL] Warning: Failed to install mkcert CA: {e}")
             return False
 
+    @staticmethod
+    def _cert_name(server_ip: Optional[str] = None) -> str:
+        if server_ip:
+            san_hash = hashlib.sha256(server_ip.encode()).hexdigest()[:8]
+            return f"vscode-remote-{san_hash}"
+        return "vscode-remote"
+
     def generate_server_cert(
         self,
         server_ip: Optional[str] = None,
@@ -94,14 +120,19 @@ class SSLCertificateGenerator:
         Uses mkcert if available (CA-trusted, no browser warnings).
         Falls back to openssl self-signed.
 
+        The cert filename includes a hash of server_ip so changing
+        the IP triggers regeneration with the new SAN.
+
         Args:
             server_ip: External IP for SAN (fixes Service Worker SSL errors)
 
         Returns:
             Tuple of (cert_path, key_path)
         """
-        cert_file = self.output_dir / "vscode-remote.pem"
-        key_file = self.output_dir / "vscode-remote-key.pem"
+        name = self._cert_name(server_ip)
+
+        cert_file = self.output_dir / f"{name}.pem"
+        key_file = self.output_dir / f"{name}-key.pem"
 
         if cert_file.exists() and key_file.exists():
             print(f"[SSL] Reusing existing cert: {cert_file}")
@@ -112,12 +143,26 @@ class SSLCertificateGenerator:
             if not self._check_mkcert_ca():
                 if not self._install_mkcert_ca():
                     print("[SSL] mkcert CA not available, falling back to openssl")
-                    return self._generate_openssl_cert(server_ip)
+                    return self._generate_openssl_cert(name, server_ip)
 
-            return self._generate_mkcert_cert(cert_file, key_file, server_ip)
+            cert_path, key_path = self._generate_mkcert_cert(
+                cert_file, key_file, server_ip
+            )
+            self._print_ca_root()
+            return cert_path, key_path
 
         print("[SSL] mkcert not found, falling back to openssl")
-        return self._generate_openssl_cert(server_ip)
+        return self._generate_openssl_cert(name, server_ip)
+
+    def _print_ca_root(self) -> None:
+        ca_root = self._get_mkcert_ca_root()
+        if ca_root:
+            print(f"[SSL] mkcert CA root: {ca_root}")
+            print("[SSL] Install this CA on client machines for browser trust:")
+            print(f"[SSL]   Copy {ca_root}/rootCA.pem to client, then:")
+            print("[SSL]   - Chrome: Settings > Security > Manage certificates > Authorities > Import")
+            print("[SSL]   - Firefox: Preferences > Privacy > View Certificates > Authorities > Import")
+            print("[SSL]   - Linux: sudo cp rootCA.pem /usr/local/share/ca-certificates/ && sudo update-ca-certificates")
 
     def _generate_mkcert_cert(
         self,
@@ -150,14 +195,16 @@ class SSLCertificateGenerator:
         except subprocess.CalledProcessError as e:
             print(f"[SSL] mkcert failed: {e.stderr}")
             print("[SSL] Falling back to openssl")
-            return self._generate_openssl_cert(server_ip)
+            name = self._cert_name(server_ip)
+            return self._generate_openssl_cert(name, server_ip)
 
     def _generate_openssl_cert(
         self,
+        name: str,
         server_ip: Optional[str] = None,
     ) -> tuple[str, str]:
-        cert_file = self.output_dir / "vscode-remote.crt"
-        key_file = self.output_dir / "vscode-remote.key"
+        cert_file = self.output_dir / f"{name}.crt"
+        key_file = self.output_dir / f"{name}.key"
 
         if cert_file.exists() and key_file.exists():
             print(f"[SSL] Reusing existing cert: {cert_file}")
@@ -188,7 +235,7 @@ keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
 """
 
-        conf_file = self.output_dir / "vscode-remote.conf"
+        conf_file = self.output_dir / f"{name}.conf"
         conf_file.write_text(conf_content)
 
         try:
@@ -216,13 +263,11 @@ extendedKeyUsage = serverAuth, clientAuth
         finally:
             conf_file.unlink(missing_ok=True)
 
-    def delete_cert(self) -> None:
-        for name in ["vscode-remote"]:
-            for ext in (".pem", "-key.pem", ".crt", ".key", ".conf"):
-                p = self.output_dir / f"{name}{ext}"
-                if p.exists():
-                    p.unlink()
-                    print(f"[SSL] Deleted: {p}")
+    def delete_certs(self) -> None:
+        for p in sorted(self.output_dir.glob("vscode-remote*")):
+            if p.suffix in (".pem", ".key", ".crt", ".conf"):
+                p.unlink()
+                print(f"[SSL] Deleted: {p}")
 
 
 def main():

@@ -176,6 +176,7 @@ async def create_instance(
 
     code_server_cmd = (
         f"code-server --bind-addr 0.0.0.0:{port} "
+        f"--base-path /{port}/ "
         f"{auth_flag} "
         f"--disable-telemetry "
         f"{workspace_path}"
