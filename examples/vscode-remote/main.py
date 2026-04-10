@@ -19,34 +19,37 @@ Runs multiple VS Code sandbox instances driven by a groups.yaml config.
 Each user gets their own sandbox with workspace at /workspace/{group}/{username}.
 Nginx reverse proxy with SSL termination maps /{port}/ to each instance.
 
-Bridge/host mode is auto-detected from the server-returned endpoint format:
-  host mode:   127.0.0.1:8443             -> nginx proxies /8443/ -> http://127.0.0.1:8443/
-  bridge mode: 127.0.0.1:55002/proxy/8443  -> nginx proxies /8443/ -> http://127.0.0.1:55002/proxy/8443/
+Bridge/host mode is auto-detected from the server-returned endpoint format.
+The displayed URL includes the full endpoint path so browsers hit execd correctly.
 
 Usage:
     # Setup (one-time)
     bash examples/vscode-remote/setup.sh
 
     # Run all groups (nginx+SSL on by default)
-    uv run python examples/vscode-remote/main.py --groups groups.yaml --external-ip 165.245.138.159
+    python examples/vscode-remote/main.py --groups groups.yaml --external-ip 165.245.138.159
 
     # Run a single group
-    uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha --external-ip 165.245.138.159
+    python examples/vscode-remote/main.py --groups groups.yaml --group alpha --external-ip 1.2.3.4
 
-    # Run with per-user passwords
-    uv run python examples/vscode-remote/main.py --groups groups.yaml --secure --external-ip 165.245.138.159
+    # Auto-detect external IP
+    python examples/vscode-remote/main.py --groups groups.yaml
 
-    # Run without nginx (direct HTTP access)
-    uv run python examples/vscode-remote/main.py --no-nginx
+    # With per-user passwords
+    python examples/vscode-remote/main.py --groups groups.yaml --secure --external-ip 1.2.3.4
+
+    # Direct HTTP without nginx
+    python examples/vscode-remote/main.py --no-nginx
 
     # Cleanup all nginx configs
-    uv run python examples/vscode-remote/main.py --cleanup
+    python examples/vscode-remote/main.py --cleanup
 """
 
 import argparse
 import asyncio
 import os
 import secrets
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
@@ -82,7 +85,6 @@ class SandboxInstance:
     port: int
     sandbox: Sandbox
     endpoint: str
-    upstream_url: str
     password: Optional[str] = None
 
 
@@ -106,25 +108,38 @@ def generate_password(length: int = 24) -> str:
     return secrets.token_urlsafe(length)
 
 
-def parse_endpoint(endpoint_str: str) -> tuple[int, str]:
-    """Parse the server-returned endpoint to extract the port and upstream URL.
+def detect_external_ip() -> Optional[str]:
+    """Detect the external IP from hostname -I, filtering private ranges."""
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        ips = result.stdout.strip().split()
+        for ip in ips:
+            if ip.startswith(("10.", "172.", "127.", "192.168.")):
+                continue
+            parts = ip.split(".")
+            if len(parts) == 4 and all(p.isdigit() for p in parts):
+                return ip
+    except Exception:
+        pass
+    return None
 
-    The endpoint string IS the proxy_pass target (minus the http:// prefix).
-    The port after the IP is used for the nginx location path.
+
+def parse_endpoint_port(endpoint_str: str) -> int:
+    """Extract the port after the IP from an endpoint string.
 
     Examples:
-      "127.0.0.1:8443"             -> (8443, "127.0.0.1:8443")
-      "127.0.0.1:55002/proxy/8443" -> (55002, "127.0.0.1:55002/proxy/8443")
-
-    Returns:
-        (port, upstream_url)
+      "127.0.0.1:8443"             -> 8443
+      "127.0.0.1:55002/proxy/8443" -> 55002
     """
     host_port_part = endpoint_str.split("/", 1)[0]
     if ":" in host_port_part:
-        port = int(host_port_part.rsplit(":", 1)[1])
-    else:
-        port = 80
-    return port, endpoint_str
+        return int(host_port_part.rsplit(":", 1)[1])
+    return 80
 
 
 async def _print_logs(label: str, execution) -> None:
@@ -156,7 +171,7 @@ async def create_instance(
 
     endpoint = await sandbox.get_endpoint(port)
     endpoint_str = endpoint.endpoint
-    endpoint_port, upstream_url = parse_endpoint(endpoint_str)
+    endpoint_port = parse_endpoint_port(endpoint_str)
     network_mode = "bridge" if "/" in endpoint_str else "host"
     print(
         f"[{user.label}] Endpoint: {endpoint_str} "
@@ -197,7 +212,6 @@ async def create_instance(
         port=endpoint_port,
         sandbox=sandbox,
         endpoint=endpoint_str,
-        upstream_url=upstream_url,
         password=password,
     )
 
@@ -209,19 +223,22 @@ async def main() -> None:
         epilog="""
 Examples:
   # Run all groups with nginx SSL (default)
-  uv run python examples/vscode-remote/main.py --groups groups.yaml --external-ip 165.245.138.159
+  python main.py --groups groups.yaml --external-ip 165.245.138.159
+
+  # Auto-detect external IP
+  python main.py --groups groups.yaml
 
   # Run a single group
-  uv run python examples/vscode-remote/main.py --groups groups.yaml --group alpha --external-ip 1.2.3.4
+  python main.py --groups groups.yaml --group alpha --external-ip 1.2.3.4
 
   # With per-user passwords
-  uv run python examples/vscode-remote/main.py --groups groups.yaml --secure --external-ip 1.2.3.4
+  python main.py --groups groups.yaml --secure --external-ip 1.2.3.4
 
   # Direct HTTP without nginx
-  uv run python examples/vscode-remote/main.py --no-nginx
+  python main.py --no-nginx
 
   # Cleanup all nginx configs
-  uv run python examples/vscode-remote/main.py --cleanup
+  python main.py --cleanup
         """,
     )
 
@@ -283,7 +300,7 @@ Examples:
         "--external-ip",
         type=str,
         default=None,
-        help="External IP address for SSL cert SAN and displayed URLs",
+        help="External IP for SSL cert SAN and URLs (auto-detected from hostname -I if omitted)",
     )
     parser.add_argument(
         "--ssl-dir",
@@ -314,6 +331,12 @@ Examples:
 
     use_nginx = not args.no_nginx
 
+    external_ip = args.external_ip
+    if not external_ip:
+        external_ip = detect_external_ip()
+        if external_ip:
+            print(f"[Auto] Detected external IP: {external_ip}")
+
     domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = args.api_key or os.getenv("SANDBOX_API_KEY")
     image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode:latest")
@@ -340,8 +363,8 @@ Examples:
     print(f"  Port range: {port_range}")
     print(f"  Secure: {'Yes (per-user passwords)' if args.secure else 'No (--auth none)'}")
     print(f"  Nginx: {'Yes (HTTPS)' if use_nginx else 'No (direct HTTP)'}")
-    if args.external_ip:
-        print(f"  External IP: {args.external_ip}")
+    if external_ip:
+        print(f"  External IP: {external_ip}")
     if args.groups:
         print(f"  Groups file: {args.groups}")
         if args.group:
@@ -356,7 +379,6 @@ Examples:
     sandbox_timeout = timedelta(minutes=args.timeout)
 
     instances: list[SandboxInstance] = []
-    nginx_gen: Optional[NginxConfigGenerator] = None
 
     try:
         tasks = []
@@ -381,16 +403,14 @@ Examples:
 
             ssl_gen = SSLCertificateGenerator(output_dir=args.ssl_dir)
             cert_path, key_path = ssl_gen.generate_server_cert(
-                server_ip=args.external_ip,
+                server_ip=external_ip,
             )
 
             for inst in instances:
                 config_path = nginx_gen.generate_port_config(
                     port=inst.port,
-                    upstream_url=inst.upstream_url,
                     cert_path=cert_path,
                     key_path=key_path,
-                    server_name=args.external_ip or "_",
                 )
                 nginx_gen.enable_config(config_path)
 
@@ -407,14 +427,19 @@ Examples:
                 current_group = inst.user.group
                 print(f"\n  Group: {current_group}")
 
+            ext_ip = external_ip or "localhost"
+
             if use_nginx:
-                ext_ip = args.external_ip or "localhost"
-                url = f"https://{ext_ip}/{inst.port}/"
+                https_url = f"https://{ext_ip}/{inst.endpoint}/"
             else:
-                url = f"http://{inst.upstream_url}/"
+                https_url = None
+
+            http_url = f"http://{inst.endpoint}/"
 
             print(f"    {inst.user.username}:")
-            print(f"      URL: {url}")
+            if https_url:
+                print(f"      URL: {https_url}")
+            print(f"      Local: {http_url}")
             print(f"      Workspace: /workspace/{inst.user.workspace}")
             if inst.password:
                 print(f"      Password: {inst.password}")
