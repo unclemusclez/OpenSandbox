@@ -451,14 +451,13 @@ Examples:
             else:
                 print("[SSL] No mkcert CA root found (ca.crt download unavailable — install mkcert for browser-trusted certs)")
 
-            for inst in instances:
-                config_path = nginx_gen.generate_port_config(
-                    port=inst.port,
-                    cert_path=cert_path,
-                    key_path=key_path,
-                    ca_cert_path=ca_cert_path,
-                )
-                nginx_gen.enable_config(config_path)
+            ports = [inst.port for inst in instances]
+            nginx_gen.generate_combined_config(
+                ports=ports,
+                cert_path=cert_path,
+                key_path=key_path,
+                ca_cert_path=ca_cert_path,
+            )
 
             nginx_gen.test_config()
             nginx_gen.reload_nginx()

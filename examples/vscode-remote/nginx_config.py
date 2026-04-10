@@ -16,12 +16,13 @@
 """
 Nginx Configuration Generator for VS Code Remote Example
 
-Generates per-port nginx configs in /etc/nginx/sites-available/, symlinks them
-into /etc/nginx/sites-enabled/. Each port gets its own config file.
+Generates a single combined nginx config with all location blocks in one
+server block. Multiple server blocks with ``server_name _;`` on the same
+port cause nginx to route all requests to only the first loaded block,
+making per-port configs unworkable.
 
-nginx location is /{port}/ with proxy_pass http://127.0.0.1:{port}/.
-The browser sends the full endpoint path (e.g., /51111/proxy/8448/), nginx
-strips /{port}/, and the remainder reaches execd/code-server correctly.
+A single combined config avoids this: one ``server`` block listening on
+80/443 with one ``location /{port}/`` block per instance.
 
   host mode:   endpoint 127.0.0.1:8443             -> location /8443/ -> proxy_pass http://127.0.0.1:8443/
   bridge mode: endpoint 127.0.0.1:55002/proxy/8443  -> location /55002/ -> proxy_pass http://127.0.0.1:55002/
@@ -30,12 +31,11 @@ Usage:
     from nginx_config import NginxConfigGenerator
 
     generator = NginxConfigGenerator()
-    path = generator.generate_port_config(
-        port=55002,
+    generator.generate_combined_config(
+        ports=[55002, 47724],
         cert_path="/etc/nginx/ssl/vscode-remote.crt",
         key_path="/etc/nginx/ssl/vscode-remote.key",
     )
-    generator.enable_config(path)
     generator.reload_nginx()
 """
 
@@ -43,26 +43,7 @@ import subprocess
 from pathlib import Path
 
 
-CA_LOCATION_BLOCK = """    location = /ca.crt {{
-        alias {ca_cert_path};
-        default_type application/x-x509-ca-cert;
-        add_header Content-Disposition 'attachment; filename="rootCA.crt"';
-    }}
-
-"""
-
-PORT_CONFIG_TEMPLATE = """server {{
-    listen 80;
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name _;
-
-    ssl_certificate {cert_path};
-    ssl_certificate_key {key_path};
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-{ca_location}    location /{port}/ {{
+LOCATION_BLOCK = """    location /{port}/ {{
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -81,10 +62,32 @@ PORT_CONFIG_TEMPLATE = """server {{
         proxy_buffering off;
         proxy_request_buffering off;
     }}
-}}
+
 """
 
-CONFIG_PREFIX = "sandbox-vscode-remote-"
+CA_LOCATION_BLOCK = """    location = /ca.crt {{
+        alias {ca_cert_path};
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="rootCA.crt"';
+    }}
+
+"""
+
+COMBINED_CONFIG_TEMPLATE = """server {{
+    listen 80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name _;
+
+    ssl_certificate {cert_path};
+    ssl_certificate_key {key_path};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+{ca_location}{location_blocks}}}
+"""
+
+CONFIG_NAME = "sandbox-vscode-remote"
 
 
 class NginxConfigGenerator:
@@ -113,36 +116,51 @@ class NginxConfigGenerator:
             except OSError as e:
                 print(f"[Nginx] Warning: Could not remove default site: {e}")
 
-    def generate_port_config(
+    def generate_combined_config(
         self,
-        port: int,
+        ports: list[int],
         cert_path: str,
         key_path: str,
         ca_cert_path: str = "",
     ) -> str:
+        """Generate a single combined nginx config with all port locations.
+
+        Args:
+            ports: List of endpoint ports to create location blocks for.
+            cert_path: Path to SSL certificate file.
+            key_path: Path to SSL private key file.
+            ca_cert_path: Optional path to CA cert for /ca.crt download.
+
+        Returns:
+            Path to the generated config file.
+        """
+        location_blocks = ""
+        for port in ports:
+            location_blocks += LOCATION_BLOCK.format(port=port)
+
         ca_location = ""
         if ca_cert_path:
             ca_location = CA_LOCATION_BLOCK.format(ca_cert_path=ca_cert_path)
 
-        config_content = PORT_CONFIG_TEMPLATE.format(
-            port=port,
+        config_content = COMBINED_CONFIG_TEMPLATE.format(
             cert_path=cert_path,
             key_path=key_path,
             ca_location=ca_location,
+            location_blocks=location_blocks,
         )
 
-        config_filename = f"{CONFIG_PREFIX}{port}"
-        config_path = self.sites_available_dir / config_filename
+        config_path = self.sites_available_dir / CONFIG_NAME
 
         try:
             config_path.write_text(config_content)
-            print(f"[Nginx] Config created: {config_path}")
+            print(f"[Nginx] Combined config created: {config_path} ({len(ports)} locations)")
         except IOError as e:
             raise RuntimeError(f"Failed to write nginx config: {e}") from e
 
+        self._enable_config(str(config_path))
         return str(config_path)
 
-    def enable_config(self, config_path: str) -> None:
+    def _enable_config(self, config_path: str) -> None:
         config_filename = Path(config_path).name
         symlink_path = self.sites_enabled_dir / config_filename
 
@@ -154,35 +172,6 @@ class NginxConfigGenerator:
             print(f"[Nginx] Config enabled: {symlink_path}")
         except OSError as e:
             raise RuntimeError(f"Failed to enable nginx config: {e}") from e
-
-    def disable_config(self, config_path: str) -> None:
-        config_filename = Path(config_path).name
-        symlink_path = self.sites_enabled_dir / config_filename
-
-        try:
-            if symlink_path.exists() or symlink_path.is_symlink():
-                symlink_path.unlink()
-                print(f"[Nginx] Config disabled: {symlink_path}")
-        except OSError as e:
-            print(f"[Nginx] Warning: Failed to disable config: {e}")
-
-    def delete_config(self, config_path: str) -> None:
-        config_file = Path(config_path)
-
-        try:
-            self.disable_config(config_path)
-
-            if config_file.exists():
-                config_file.unlink()
-                print(f"[Nginx] Config deleted: {config_file}")
-        except OSError as e:
-            print(f"[Nginx] Warning: Failed to delete config: {e}")
-
-    def delete_config_by_port(self, port: int) -> None:
-        config_filename = f"{CONFIG_PREFIX}{port}"
-        config_path = self.sites_available_dir / config_filename
-        if config_path.exists():
-            self.delete_config(str(config_path))
 
     def reload_nginx(self) -> None:
         try:
@@ -216,18 +205,36 @@ class NginxConfigGenerator:
             return False
 
     def cleanup_all(self) -> None:
-        configs = list(self.sites_available_dir.glob(f"{CONFIG_PREFIX}*"))
+        cleaned = False
 
-        if not configs:
+        for config_path in self.sites_available_dir.glob(f"{CONFIG_NAME}*"):
+            self._delete_config(str(config_path))
+            cleaned = True
+
+        for symlink_path in self.sites_enabled_dir.glob(f"{CONFIG_NAME}*"):
+            if symlink_path.is_symlink():
+                try:
+                    symlink_path.unlink()
+                    print(f"[Nginx] Removed symlink: {symlink_path}")
+                    cleaned = True
+                except OSError as e:
+                    print(f"[Nginx] Warning: Failed to remove symlink: {e}")
+
+        if not cleaned:
             print("[Nginx] No sandbox configs to clean up")
             return
-
-        print(f"[Nginx] Found {len(configs)} sandbox config(s) to clean up")
-
-        for config_path in configs:
-            self.delete_config(str(config_path))
 
         try:
             self.reload_nginx()
         except RuntimeError as e:
             print(f"[Nginx] Warning: Reload after cleanup failed: {e}")
+
+    def _delete_config(self, config_path: str) -> None:
+        config_file = Path(config_path)
+
+        try:
+            if config_file.exists():
+                config_file.unlink()
+                print(f"[Nginx] Config deleted: {config_file}")
+        except OSError as e:
+            print(f"[Nginx] Warning: Failed to delete config: {e}")
