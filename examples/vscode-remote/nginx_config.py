@@ -67,8 +67,13 @@ from pathlib import Path
 # """
 
 LOCATION_BLOCK = """    location /{port}/ {{
-        # Load standard types and set a fallback
+        # 1. Force Nginx to recognize JavaScript and WASM correctly
         include /etc/nginx/mime.types;
+        types {{
+            application/javascript js;
+            application/wasm wasm;
+            text/css css;
+        }}
         default_type application/octet-stream;
 
         proxy_pass http://127.0.0.1:{port}/;
@@ -77,24 +82,26 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
 
-        # Force correct MIME types for JS modules and WASM
-        location ~* \\.js$ {{
+        # 2. Specific block for Service Worker to ensure headers are sent
+        location ~* service-worker\\.js$ {{
             proxy_pass http://127.0.0.1:{port};
-            add_header Content-Type application/javascript;
             add_header Service-Worker-Allowed /;
+            add_header Content-Type application/javascript;
+            add_header X-Content-Type-Options nosniff;
         }}
 
-        location ~* \\.wasm$ {{
-            proxy_pass http://127.0.0.1:{port};
-            add_header Content-Type application/wasm;
-        }}
-
+        # 3. Security headers to enable Clipboard and Service Workers
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # Security header that prevents the browser from guessing types
+        add_header Service-Worker-Allowed /;
         add_header X-Content-Type-Options nosniff;
+        
+        # Buffer sizes for long VS Code URIs
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
     }}
 """
 
