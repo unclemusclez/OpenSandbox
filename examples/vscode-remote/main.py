@@ -168,7 +168,7 @@ async def create_instance(
 ) -> SandboxInstance:
     env = {"PYTHON_VERSION": python_version}
 
-    workspace_path = f"/workspace/{user.workspace}"
+    workspace_path = "/workspace"
 
     volumes: list[Volume] | None = None
     if workspace_dir:
@@ -177,11 +177,11 @@ async def create_instance(
         volumes = [
             Volume(
                 name="workspace",
-                host=Host(path=host_path),
+                host=Host(path=workspace_dir),
                 mount_path=workspace_path,
             )
         ]
-        print(f"[{user.label}] Bind-mounting {host_path} -> {workspace_path}")
+        print(f"[{user.label}] Bind-mounting {workspace_dir} -> {workspace_path}")
 
     sandbox = await Sandbox.create(
         image,
