@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import subprocess
 from datetime import timedelta
 from typing import Optional
 
@@ -53,8 +54,6 @@ def generate_password(length: int = 24) -> str:
 
 def detect_external_ip() -> Optional[str]:
     """Detect the external IP from hostname -I, filtering private ranges."""
-    import subprocess
-
     try:
         result = subprocess.run(
             ["hostname", "-I"],
@@ -170,15 +169,7 @@ Examples:
     api_key = args.api_key or os.getenv("SANDBOX_API_KEY")
     image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode-ssl:latest")
     python_version = args.python_version or os.getenv("PYTHON_VERSION", "3.11")
-
-    print("Starting VS Code sandbox with SSL...")
-    print(f"  Domain: {domain}")
-    print(f"  Image: {image}")
-    print(f"  Port: {args.port}")
-    print(f"  Secure: {'Yes (password)' if args.secure else 'No (--auth none)'}")
-    if external_ip:
-        print(f"  External IP: {external_ip}")
-    print()
+    code_port = args.port
 
     config = ConnectionConfig(
         domain=domain,
@@ -191,25 +182,14 @@ Examples:
         image,
         connection_config=config,
         env=env,
-        timeout=timedelta(minutes=args.timeout),
     )
 
-    try:
+    async with sandbox:
         cert_dir = args.cert_dir
         cert_path = f"{cert_dir}/server.crt"
         key_path = f"{cert_dir}/server.key"
 
-        check_exec = await sandbox.commands.run("which openssl")
-        if check_exec.exit_code != 0:
-            print("[SSL] Installing openssl...")
-            install_exec = await sandbox.commands.run(
-                "apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*"
-            )
-            if install_exec.exit_code != 0:
-                raise RuntimeError("Failed to install openssl inside sandbox")
-
         print("[SSL] Generating self-signed certificate inside sandbox...")
-
         await sandbox.commands.run(f"mkdir -p {cert_dir}")
 
         san_entries = ["DNS:localhost", "IP:127.0.0.1"]
@@ -241,14 +221,14 @@ Examples:
             auth_flag = "--auth password"
 
         code_server_cmd = (
-            f"code-server --bind-addr 0.0.0.0:{args.port} "
+            f"code-server --bind-addr 0.0.0.0:{code_port} "
             f"{auth_flag} "
             f"--disable-telemetry "
             f"--cert {cert_path} "
             f"--cert-key {key_path} "
             f"/workspace"
         )
-        print(f"[code-server] Starting with SSL on port {args.port}")
+        print(f"[code-server] Starting with SSL on port {code_port}")
 
         start_exec = await sandbox.commands.run(
             code_server_cmd,
@@ -256,17 +236,12 @@ Examples:
         )
         await _print_logs("code-server", start_exec)
 
-        endpoint = await sandbox.get_endpoint(args.port)
+        endpoint = await sandbox.get_endpoint(code_port)
         endpoint_str = endpoint.endpoint
 
-        endpoint_port_part = endpoint_str.split("/", 1)[0]
-        if ":" in endpoint_port_part:
-            connect_port = endpoint_port_part.rsplit(":", 1)[1]
-        else:
-            connect_port = "443"
-
         if "/" in endpoint_str:
-            https_url = f"https://{external_ip or 'localhost'}/{endpoint_str.split(':', 1)[1] if ':' in endpoint_str else endpoint_str}/"
+            endpoint_path = endpoint_str.split(":", 1)[1] if ":" in endpoint_str else endpoint_str
+            https_url = f"https://{external_ip or 'localhost'}{endpoint_path}/"
         else:
             https_url = f"https://{endpoint_str}/"
 
@@ -299,17 +274,9 @@ Examples:
         try:
             await asyncio.sleep(args.timeout * 60)
         except KeyboardInterrupt:
-            print("\nStopping...")
-
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    finally:
-        print("\nCleaning up...")
-        try:
+            print("Stopping...")
+        finally:
             await sandbox.kill()
-        except Exception as e:
-            print(f"  Note: Sandbox may already be terminated: {e}")
-        print("Cleanup complete.")
 
 
 if __name__ == "__main__":
