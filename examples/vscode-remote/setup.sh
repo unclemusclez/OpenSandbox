@@ -36,6 +36,10 @@ sudo apt-get install -y --no-install-recommends \
     curl \
     libnss3-tools
 
+
+sudo usermod -aG docker $USER # Add your user to the docker group
+newgrp docker # Apply group changes without logging out
+
 echo "[Setup] Creating SSL directory at ${SSL_DIR}..."
 sudo mkdir -p "${SSL_DIR}"
 sudo chown -R "$(whoami)":"$(whoami)" "${SSL_DIR}" 2>/dev/null || true
@@ -64,7 +68,7 @@ CAROOT=$(mkcert -caroot 2>/dev/null || true)
 
 echo "[Setup] Working from source..."
 #
-#git clone https://github.com/unclemusclez/OpenSandbox.git
+git clone https://github.com/unclemusclez/OpenSandbox.git
 cd ~/OpenSandbox/examples/vscode
 docker build -t opensandbox/vscode:latest .
 python -m venv ~/.venv

@@ -43,67 +43,67 @@ import subprocess
 from pathlib import Path
 
 
-# LOCATION_BLOCK = """    location /{port}/ {{
-#         proxy_pass http://127.0.0.1:{port}/;
-#         proxy_http_version 1.1;
-#         proxy_set_header Upgrade $http_upgrade;
-#         proxy_set_header Connection "upgrade";
-#         proxy_set_header Host $http_host;
-#         proxy_set_header X-Real-IP $remote_addr;
-#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-#         proxy_set_header X-Forwarded-Proto $scheme;
-#         proxy_set_header X-Forwarded-Host $http_host;
-#         proxy_set_header Accept-Encoding gzip;
-#         proxy_redirect off;
-#         proxy_cookie_path / /{port}/;
-#         add_header Service-Worker-Allowed /;
-#         proxy_ssl_verify off;
-#         proxy_read_timeout 86400;
-#         proxy_send_timeout 86400;
-#         proxy_buffering off;
-#         proxy_request_buffering off;
-#     }}
-
-# """
-
 LOCATION_BLOCK = """    location /{port}/ {{
-        # 1. Force Nginx to recognize JavaScript and WASM correctly
-        include /etc/nginx/mime.types;
-        types {{
-            application/javascript js;
-            application/wasm wasm;
-            text/css css;
-        }}
-        default_type application/octet-stream;
-
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $http_host;
-
-        # 2. Specific block for Service Worker to ensure headers are sent
-        location ~* service-worker\\.js$ {{
-            proxy_pass http://127.0.0.1:{port};
-            add_header Service-Worker-Allowed /;
-            add_header Content-Type application/javascript;
-            add_header X-Content-Type-Options nosniff;
-        }}
-
-        # 3. Security headers to enable Clipboard and Service Workers
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header Accept-Encoding gzip;
+        proxy_redirect off;
+        proxy_cookie_path / /{port}/;
         add_header Service-Worker-Allowed /;
-        add_header X-Content-Type-Options nosniff;
-        
-        # Buffer sizes for long VS Code URIs
-        proxy_buffer_size 128k;
-        proxy_buffers 4 256k;
-        proxy_busy_buffers_size 256k;
+        proxy_ssl_verify off;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_buffering off;
+        proxy_request_buffering off;
     }}
+
 """
+
+# LOCATION_BLOCK = """    location /{port}/ {{
+#         # 1. Force Nginx to recognize JavaScript and WASM correctly
+#         include /etc/nginx/mime.types;
+#         types {{
+#             application/javascript js;
+#             application/wasm wasm;
+#             text/css css;
+#         }}
+#         default_type application/octet-stream;
+
+#         proxy_pass http://127.0.0.1:{port}/;
+#         proxy_http_version 1.1;
+#         proxy_set_header Upgrade $http_upgrade;
+#         proxy_set_header Connection "upgrade";
+#         proxy_set_header Host $http_host;
+
+#         # 2. Specific block for Service Worker to ensure headers are sent
+#         location ~* service-worker\\.js$ {{
+#             proxy_pass http://127.0.0.1:{port};
+#             add_header Service-Worker-Allowed /;
+#             add_header Content-Type application/javascript;
+#             add_header X-Content-Type-Options nosniff;
+#         }}
+
+#         # 3. Security headers to enable Clipboard and Service Workers
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+
+#         add_header Service-Worker-Allowed /;
+#         add_header X-Content-Type-Options nosniff;
+
+#         # Buffer sizes for long VS Code URIs
+#         proxy_buffer_size 128k;
+#         proxy_buffers 4 256k;
+#         proxy_busy_buffers_size 256k;
+#     }}
+# """
 
 CA_LOCATION_BLOCK = """    location = /ca.crt {{
         alias {ca_cert_path};
