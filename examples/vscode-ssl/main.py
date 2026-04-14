@@ -31,7 +31,7 @@ Usage:
     # With password authentication
     python examples/vscode-ssl/main.py --secure
 
-    # Auto-detect external IP for cert SAN
+    # Override external IP (cert SAN); eip is auto-read from ~/.sandbox.toml
     python examples/vscode-ssl/main.py --external-ip 1.2.3.4
 """
 
@@ -41,7 +41,13 @@ import os
 import secrets
 import subprocess
 from datetime import timedelta
+from pathlib import Path
 from typing import Optional
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
@@ -50,6 +56,20 @@ from opensandbox.models.execd import RunCommandOpts
 
 def generate_password(length: int = 24) -> str:
     return secrets.token_urlsafe(length)
+
+
+def read_eip_from_config() -> Optional[str]:
+    """Read the server.eip field from ~/.sandbox.toml (or SANDBOX_CONFIG_PATH)."""
+    config_path = os.getenv("SANDBOX_CONFIG_PATH") or str(
+        Path.home() / ".sandbox.toml"
+    )
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        eip = (data.get("server", {}).get("eip") or "").strip()
+        return eip or None
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
 
 
 def detect_external_ip() -> Optional[str]:
@@ -94,7 +114,7 @@ Examples:
   # With password authentication
   python main.py --secure
 
-  # Auto-detect external IP for cert SAN
+  # Override cert SAN IP (eip auto-read from ~/.sandbox.toml if set)
   python main.py --external-ip 1.2.3.4
 
   # Custom code-server port
@@ -148,7 +168,8 @@ Examples:
         "--external-ip",
         type=str,
         default=None,
-        help="External IP for certificate SAN (auto-detected from hostname -I if omitted)",
+        help="External IP for certificate SAN (read from ~/.sandbox.toml [server].eip by default, "
+        "falls back to hostname -I auto-detection)",
     )
     parser.add_argument(
         "--cert-dir",
@@ -160,6 +181,10 @@ Examples:
     args = parser.parse_args()
 
     external_ip = args.external_ip
+    if not external_ip:
+        external_ip = read_eip_from_config()
+        if external_ip:
+            print(f"[Config] Using eip from ~/.sandbox.toml: {external_ip}")
     if not external_ip:
         external_ip = detect_external_ip()
         if external_ip:
@@ -239,17 +264,10 @@ Examples:
         endpoint = await sandbox.get_endpoint(code_port)
         endpoint_str = endpoint.endpoint
 
-        if "/" in endpoint_str:
-            endpoint_path = endpoint_str.split(":", 1)[1] if ":" in endpoint_str else endpoint_str
-            https_url = f"https://{external_ip or 'localhost'}{endpoint_path}/"
-        else:
-            https_url = f"https://{endpoint_str}/"
-
         print("\n" + "=" * 50)
         print("VS Code Web Endpoint (HTTPS)")
         print("=" * 50)
-        print(f"  URL: {https_url}")
-        print(f"  Direct: https://{endpoint_str}/")
+        print(f"  URL: https://{endpoint_str}/")
         if password:
             print(f"  Password: {password}")
         print()
@@ -263,7 +281,8 @@ Examples:
         else:
             print(
                 "  Note: Self-signed cert covers localhost/127.0.0.1 only.\n"
-                "  Use --external-ip to add your IP to the certificate SAN."
+                "  Set [server].eip in ~/.sandbox.toml or use --external-ip "
+                "to add your IP to the certificate SAN."
             )
 
         print(
