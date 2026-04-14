@@ -216,6 +216,8 @@ async def create_instance(
         f"--disable-telemetry "
         f"{workspace_path}"
     )
+    if secure and password:
+        code_server_cmd = f"PASSWORD='{password}' {code_server_cmd}"
     print(f"[{user.label}] Starting code-server on port {port}")
 
     start_exec = await sandbox.commands.run(
@@ -223,10 +225,6 @@ async def create_instance(
         opts=RunCommandOpts(background=True),
     )
     await _print_logs(user.label, start_exec)
-
-    if secure and password:
-        password_cmd = f"echo '{password}' > /tmp/code-server-password"
-        await sandbox.commands.run(password_cmd)
 
     return SandboxInstance(
         user=user,
