@@ -176,7 +176,7 @@ async def create_instance(
         os.makedirs(host_path, exist_ok=True)
         volumes = [
             Volume(
-                name="workspace",
+                name=f"workspace-{user.group}-{user.username}",
                 host=Host(path=host_path),
                 mount_path=workspace_path,
             )
