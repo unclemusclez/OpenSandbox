@@ -43,6 +43,20 @@ import subprocess
 from pathlib import Path
 
 
+def _sudo_mkdir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        subprocess.run(
+            ["sudo", "mkdir", "-p", str(path)],
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "chmod", "777", str(path)],
+            check=True,
+        )
+
+
 LOCATION_BLOCK = """    location /{port}/ {{
         proxy_pass http://127.0.0.1:{port}/;
         proxy_http_version 1.1;
@@ -144,14 +158,21 @@ class NginxConfigGenerator:
         self.reload_command = reload_command
         self.test_command = test_command
 
-        self.sites_available_dir.mkdir(parents=True, exist_ok=True)
-        self.sites_enabled_dir.mkdir(parents=True, exist_ok=True)
+        _sudo_mkdir(self.sites_available_dir)
+        _sudo_mkdir(self.sites_enabled_dir)
+
+    @staticmethod
+    def _sudo_unlink(path: Path) -> None:
+        try:
+            path.unlink()
+        except PermissionError:
+            subprocess.run(["sudo", "rm", "-f", str(path)], check=True)
 
     def _remove_default_site(self) -> None:
         default_symlink = self.sites_enabled_dir / "default"
         if default_symlink.exists() or default_symlink.is_symlink():
             try:
-                default_symlink.unlink()
+                self._sudo_unlink(default_symlink)
                 print("[Nginx] Removed default site to avoid conflict")
             except OSError as e:
                 print(f"[Nginx] Warning: Could not remove default site: {e}")
@@ -192,7 +213,16 @@ class NginxConfigGenerator:
         config_path = self.sites_available_dir / CONFIG_NAME
 
         try:
-            config_path.write_text(config_content)
+            try:
+                config_path.write_text(config_content)
+            except PermissionError:
+                tmp_path = Path(f"/tmp/{CONFIG_NAME}")
+                tmp_path.write_text(config_content)
+                subprocess.run(
+                    ["sudo", "cp", str(tmp_path), str(config_path)],
+                    check=True,
+                )
+                tmp_path.unlink(missing_ok=True)
             print(f"[Nginx] Combined config created: {config_path} ({len(ports)} locations)")
         except IOError as e:
             raise RuntimeError(f"Failed to write nginx config: {e}") from e
@@ -206,9 +236,15 @@ class NginxConfigGenerator:
 
         try:
             if symlink_path.exists() or symlink_path.is_symlink():
-                symlink_path.unlink()
+                self._sudo_unlink(symlink_path)
 
-            symlink_path.symlink_to(config_path)
+            try:
+                symlink_path.symlink_to(config_path)
+            except PermissionError:
+                subprocess.run(
+                    ["sudo", "ln", "-s", config_path, str(symlink_path)],
+                    check=True,
+                )
             print(f"[Nginx] Config enabled: {symlink_path}")
         except OSError as e:
             raise RuntimeError(f"Failed to enable nginx config: {e}") from e
@@ -254,7 +290,7 @@ class NginxConfigGenerator:
         for symlink_path in self.sites_enabled_dir.glob(f"{CONFIG_NAME}*"):
             if symlink_path.is_symlink():
                 try:
-                    symlink_path.unlink()
+                    self._sudo_unlink(symlink_path)
                     print(f"[Nginx] Removed symlink: {symlink_path}")
                     cleaned = True
                 except OSError as e:
@@ -274,7 +310,7 @@ class NginxConfigGenerator:
 
         try:
             if config_file.exists():
-                config_file.unlink()
+                self._sudo_unlink(config_file)
                 print(f"[Nginx] Config deleted: {config_file}")
         except OSError as e:
             print(f"[Nginx] Warning: Failed to delete config: {e}")

@@ -40,11 +40,49 @@ from pathlib import Path
 from typing import Optional
 
 
+def _sudo_mkdir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        subprocess.run(
+            ["sudo", "mkdir", "-p", str(path)],
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "chmod", "777", str(path)],
+            check=True,
+        )
+
+
+def _sudo_chmod(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except PermissionError:
+        subprocess.run(["sudo", "chmod", oct(mode)[2:], str(path)], check=True)
+
+
+def _sudo_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        subprocess.run(["sudo", "rm", "-f", str(path)], check=True)
+
+
+def _sudo_write_text(path: Path, content: str) -> None:
+    try:
+        path.write_text(content)
+    except PermissionError:
+        tmp_path = Path(f"/tmp/{path.name}")
+        tmp_path.write_text(content)
+        subprocess.run(["sudo", "cp", str(tmp_path), str(path)], check=True)
+        tmp_path.unlink(missing_ok=True)
+
+
 class SSLCertificateGenerator:
 
     def __init__(self, output_dir: str = "/etc/nginx/ssl"):
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        _sudo_mkdir(self.output_dir)
         self._mkcert_path: Optional[str] = None
 
     def _find_mkcert(self) -> Optional[str]:
@@ -192,8 +230,8 @@ class SSLCertificateGenerator:
         if cert_file and key_file:
             if server_ip and not self._cert_has_san(cert_file, server_ip):
                 print(f"[SSL] Existing cert missing IP={server_ip} in SAN, regenerating")
-                cert_file.unlink()
-                key_file.unlink(missing_ok=True)
+                _sudo_unlink(cert_file)
+                _sudo_unlink(key_file)
             else:
                 print(f"[SSL] Reusing existing cert: {cert_file}")
                 return str(cert_file), str(key_file)
@@ -251,7 +289,7 @@ class SSLCertificateGenerator:
                 capture_output=True,
                 text=True,
             )
-            os.chmod(key_file, 0o600)
+            _sudo_chmod(key_file, 0o600)
             print(f"[SSL] Certificate saved: {cert_file}")
             print(f"[SSL] Key saved: {key_file}")
             return str(cert_file), str(key_file)
@@ -304,7 +342,7 @@ extendedKeyUsage = serverAuth, clientAuth
 """
 
         conf_file = self.output_dir / f"{name}.conf"
-        conf_file.write_text(conf_content)
+        _sudo_write_text(conf_file, conf_content)
 
         try:
             subprocess.run(
@@ -320,7 +358,7 @@ extendedKeyUsage = serverAuth, clientAuth
                 capture_output=True,
                 text=True,
             )
-            os.chmod(key_file, 0o600)
+            _sudo_chmod(key_file, 0o600)
             print(f"[SSL] Certificate saved: {cert_file}")
             print(f"[SSL] Key saved: {key_file}")
             return str(cert_file), str(key_file)
@@ -329,12 +367,12 @@ extendedKeyUsage = serverAuth, clientAuth
                 f"Failed to generate SSL cert: {e.stderr}"
             ) from e
         finally:
-            conf_file.unlink(missing_ok=True)
+            _sudo_unlink(conf_file)
 
     def delete_certs(self) -> None:
         for p in sorted(self.output_dir.glob("vscode-remote*")):
             if p.suffix in (".pem", ".key", ".crt", ".conf"):
-                p.unlink()
+                _sudo_unlink(p)
                 print(f"[SSL] Deleted: {p}")
 
 

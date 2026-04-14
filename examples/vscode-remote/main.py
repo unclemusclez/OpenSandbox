@@ -443,7 +443,13 @@ Examples:
                 ca_root_pem = os.path.join(ca_root, "rootCA.pem")
                 if os.path.exists(ca_root_pem):
                     ca_serve_path = os.path.join(args.ssl_dir, "rootCA.pem")
-                    shutil.copy2(ca_root_pem, ca_serve_path)
+                    try:
+                        shutil.copy2(ca_root_pem, ca_serve_path)
+                    except PermissionError:
+                        subprocess.run(
+                            ["sudo", "cp", ca_root_pem, ca_serve_path],
+                            check=True,
+                        )
                     ca_cert_path = ca_serve_path
                     print(f"[SSL] CA cert available at https://{external_ip or 'localhost'}/ca.crt")
                 else:
