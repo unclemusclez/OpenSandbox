@@ -26,7 +26,7 @@ sudo apt-get upgrade
 sudo apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
-    python3-pip \open
+    python3-pip \
     python-is-python3 \
     nginx \
     mkcert \
