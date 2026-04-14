@@ -284,8 +284,8 @@ Examples:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=10,
-        help="Timeout in minutes to keep sandboxes alive (default: 10)",
+        default=0,
+        help="Timeout in minutes to keep sandboxes alive (default: 0 = no timeout)",
     )
     parser.add_argument(
         "--domain",
@@ -406,7 +406,7 @@ Examples:
         api_key=api_key,
         request_timeout=timedelta(seconds=60),
     )
-    sandbox_timeout = timedelta(minutes=args.timeout)
+    sandbox_timeout = timedelta(minutes=args.timeout) if args.timeout > 0 else None
 
     instances: list[SandboxInstance] = []
 
@@ -504,12 +504,15 @@ Examples:
             print(f"  CA Certificate: https://{ext_ip}/ca.crt")
             print("  (Download and import into browser to trust HTTPS)")
         print(
-            f"Keeping sandboxes alive for {args.timeout} minutes. "
-            f"Press Ctrl+C to exit sooner."
+            f"Keeping sandboxes alive {'indefinitely' if args.timeout == 0 else f'for {args.timeout} minutes'}. "
+            f"Press Ctrl+C to exit."
         )
 
         try:
-            await asyncio.sleep(args.timeout * 60)
+            if args.timeout > 0:
+                await asyncio.sleep(args.timeout * 60)
+            else:
+                await asyncio.Event().wait()
         except KeyboardInterrupt:
             print("\nStopping...")
 
