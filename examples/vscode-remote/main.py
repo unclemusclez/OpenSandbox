@@ -178,10 +178,10 @@ async def create_instance(
             Volume(
                 name=f"workspace-{user.group}-{user.username}",
                 host=Host(path=host_path),
-                mount_path=workspace_path,
+                mount_path="/workspace",
             )
         ]
-        print(f"[{user.label}] Bind-mounting {host_path} -> {workspace_path}")
+        print(f"[{user.label}] Bind-mounting {host_path} -> /workspace")
 
     sandbox = await Sandbox.create(
         image,
@@ -226,7 +226,7 @@ async def create_instance(
         f"code-server --bind-addr 0.0.0.0:{port} "
         f"{auth_flag} "
         f"--disable-telemetry "
-        f"{workspace_path}"
+        f"/workspace"
     )
     print(f"[{user.label}] Starting code-server on port {port}")
 
