@@ -210,14 +210,24 @@ async def create_instance(
         mkdir_cmd = f"mkdir -p {workspace_path}"
         await sandbox.commands.run(mkdir_cmd)
 
+    if secure and password:
+        config_dir = "/home/vscode/.config/code-server"
+        config_content = (
+            f"bind-addr: 0.0.0.0:{port}\n"
+            f"auth: password\n"
+            f"password: {password}\n"
+            f"cert: false\n"
+        )
+        await sandbox.commands.run(f"mkdir -p {config_dir}")
+        write_config = f"cat > {config_dir}/config.yaml << 'CONFIGEOF'\n{config_content}CONFIGEOF"
+        await sandbox.commands.run(write_config)
+
     code_server_cmd = (
         f"code-server --bind-addr 0.0.0.0:{port} "
         f"{auth_flag} "
         f"--disable-telemetry "
         f"{workspace_path}"
     )
-    if secure and password:
-        code_server_cmd = f"PASSWORD='{password}' {code_server_cmd}"
     print(f"[{user.label}] Starting code-server on port {port}")
 
     start_exec = await sandbox.commands.run(
