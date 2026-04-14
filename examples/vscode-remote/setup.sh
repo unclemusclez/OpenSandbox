@@ -21,11 +21,12 @@ SSL_DIR="${SSL_DIR:-/etc/nginx/ssl}"
 echo "[Setup] Installing prerequisites for VS Code Remote hackathon environment..."
 
 sudo apt-get update
+sudo apt-get upgrade
 
 sudo apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
-    python3-pip \
+    python3-pip \open
     python-is-python3 \
     nginx \
     mkcert \
