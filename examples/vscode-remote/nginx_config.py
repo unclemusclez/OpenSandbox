@@ -68,7 +68,8 @@ LOCATION_BLOCK = """    location /{port}/ {{
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $http_host;
         proxy_set_header Accept-Encoding gzip;
-        proxy_redirect off;
+        proxy_redirect default;
+        proxy_cookie_path / /{port}/;
         add_header Service-Worker-Allowed /;
         proxy_ssl_verify off;
         proxy_read_timeout 86400;
