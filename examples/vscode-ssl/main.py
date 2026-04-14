@@ -199,6 +199,15 @@ Examples:
         cert_path = f"{cert_dir}/server.crt"
         key_path = f"{cert_dir}/server.key"
 
+        check_exec = await sandbox.commands.run("which openssl")
+        if check_exec.exit_code != 0:
+            print("[SSL] Installing openssl...")
+            install_exec = await sandbox.commands.run(
+                "apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*"
+            )
+            if install_exec.exit_code != 0:
+                raise RuntimeError("Failed to install openssl inside sandbox")
+
         print("[SSL] Generating self-signed certificate inside sandbox...")
 
         await sandbox.commands.run(f"mkdir -p {cert_dir}")

@@ -16,18 +16,22 @@
 set -ex
 
 TAG=${TAG:-latest}
+PUSH=${PUSH:-false}
 
-docker buildx rm vscode-ssl-builder || true
-
-docker buildx create --use --name vscode-ssl-builder
-
-docker buildx inspect --bootstrap
-
-docker buildx ls
-
-docker buildx build \
-  -t opensandbox/vscode-ssl:${TAG} \
-  -t sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/vscode-ssl:${TAG} \
-  --platform linux/amd64,linux/arm64 \
-  --push \
-  .
+if [ "$PUSH" = "true" ]; then
+  docker buildx rm vscode-ssl-builder || true
+  docker buildx create --use --name vscode-ssl-builder
+  docker buildx inspect --bootstrap
+  docker buildx ls
+  docker buildx build \
+    -t opensandbox/vscode-ssl:${TAG} \
+    -t sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/vscode-ssl:${TAG} \
+    --platform linux/amd64,linux/arm64 \
+    --push \
+    .
+else
+  docker buildx build \
+    -t opensandbox/vscode-ssl:${TAG} \
+    --load \
+    .
+fi
