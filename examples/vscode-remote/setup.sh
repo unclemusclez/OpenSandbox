@@ -21,7 +21,7 @@ SSL_DIR="${SSL_DIR:-/etc/nginx/ssl}"
 echo "[Setup] Installing prerequisites for VS Code Remote hackathon environment..."
 
 sudo apt-get update
-sudo apt-get upgrade
+sudo apt-get upgrade -y
 
 sudo apt-get install -y --no-install-recommends \
     python3 \
@@ -35,7 +35,14 @@ sudo apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
     curl \
-    libnss3-tools
+    libnss3-tools \
+    software-properties-common
+
+echo "[Setup] Installing lemonade-server via PPA..."
+sudo add-apt-repository -y ppa:lemonade-team/stable
+sudo apt-get update
+sudo apt-get install -y lemonade-server
+sudo update-pciids 2>/dev/null || true
 
 echo "[Setup] Creating SSL directory at ${SSL_DIR}..."
 sudo mkdir -p "${SSL_DIR}"
@@ -63,33 +70,48 @@ sudo mkcert -install 2>/dev/null || mkcert -install 2>/dev/null || {
 
 CAROOT=$(mkcert -caroot 2>/dev/null || true)
 
-echo "[Setup] Working from source..."
-#
-git clone https://github.com/unclemusclez/OpenSandbox.git
-cd ~/OpenSandbox/examples/vscode
-docker build -t opensandbox/vscode:latest .
-python -m venv ~/.venv
-. ~/.venv/bin/activate
-cd ~/OpenSandbox/server
-pip install .
-cp opensandbox_server/examples/example.config.toml ~/.sandbox.toml
-cd ~/OpenSandbox/cli
-pip install .
+# Clone and build if running standalone (not from inside the repo)
+REPO_DIR="${SCRIPT_DIR}/../.."
+REPO_DIR="$(cd "${REPO_DIR}" && pwd)"
+if [[ ! -f "${REPO_DIR}/server/pyproject.toml" ]]; then
+    echo "[Setup] Cloning OpenSandbox repository..."
+    git clone https://github.com/unclemusclez/OpenSandbox.git ~/OpenSandbox
+    REPO_DIR=~/OpenSandbox
+fi
 
+echo "[Setup] Building Docker image..."
+docker build -t opensandbox/vscode:latest "${SCRIPT_DIR}/"
+
+echo "[Setup] Installing OpenSandbox server and CLI..."
+python3 -m venv ~/.venv
+. ~/.venv/bin/activate
+pip install "${REPO_DIR}/server"
+cp "${REPO_DIR}/opensandbox_server/examples/example.config.toml" ~/.sandbox.toml
+pip install "${REPO_DIR}/cli"
+
+echo "[Setup] Adding user to docker group..."
+sudo usermod -aG docker "$USER"
+
+echo ""
 echo "[Setup] Prerequisites installed successfully."
 echo "[Setup] SSL certs will be generated at: ${SSL_DIR}"
 echo ""
 echo "[Setup] Next steps:"
-echo "  1. Start the server:  opensandbox-server"
-echo "  2. In another terminal, run:"
+echo "  1. Start the OpenSandbox server:"
 echo "     . ~/.venv/bin/activate"
-echo "     python ${SCRIPT_DIR}/main.py --groups ${SCRIPT_DIR}/groups.yaml --external-ip <YOUR_IP>"
+echo "     opensandbox-server"
+echo ""
+echo "  2. In another terminal, start the Lemonade inference server:"
+echo "     bash ${SCRIPT_DIR}/setup-lemonade.sh --groups ${SCRIPT_DIR}/groups.yaml --generate-keys --external-ip <YOUR_IP>"
+echo ""
+echo "  3. In another terminal, start the VS Code sandboxes:"
+echo "     . ~/.venv/bin/activate"
+echo "     python ${SCRIPT_DIR}/main.py --groups ${SCRIPT_DIR}/groups.yaml --external-ip <YOUR_IP> --lemonade kilo.json --vscode-settings ${SCRIPT_DIR}/vscode-settings.jsonc"
+echo ""
 if [ -n "$CAROOT" ]; then
-    echo ""
     echo "[Setup] For client browsers: install the mkcert CA root from:"
     echo "  ${CAROOT}/rootCA.pem"
+    echo ""
 fi
-
-sudo usermod -aG docker $USER # Add your user to the docker group
-newgrp docker # Apply group changes without logging out
-. ~/.venv/bin/activate
+echo "[Setup] Note: You may need to log out and back in for the docker group to take effect,"
+echo "        or run: newgrp docker"
