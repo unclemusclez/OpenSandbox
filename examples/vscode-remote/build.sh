@@ -27,11 +27,13 @@ if [ "$PUSH" = "true" ]; then
     -t opensandbox/vscode-remote:${TAG} \
     -t sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/vscode-remote:${TAG} \
     --platform linux/amd64,linux/arm64 \
+    -f examples/vscode-remote/Dockerfile \
     --push \
-    .
+    ../..
 else
   docker buildx build \
     -t opensandbox/vscode-remote:${TAG} \
+    -f examples/vscode-remote/Dockerfile \
     --load \
-    .
+    ../..
 fi

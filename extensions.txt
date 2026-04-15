@@ -115,10 +115,8 @@ oracle.mysql-shell-for-vs-code
 oracle.oracle-java
 randomfractalsinc.duckdb-sql-tools
 randomfractalsinc.vscode-data-preview
-
 redhat.java
 redhat.vscode-yaml
-
 svelte.svelte-vscode
 tomblind.scm-buttons-vscode
 tombonnike.vscode-status-bar-format-toggle
@@ -133,8 +131,6 @@ vstirbu.vscode-mermaid-preview
 watson-devex.ibm-watsonx-orchestrate-agent-builder
 whitphx.vscode-stlite
 wholroyd.jinja
-wordpresstoolbox.wordpress-toolbox
-xabikos.javascriptsnippets
 xdebug.php-debug
 xdebug.php-pack
 yoavbls.pretty-ts-errors

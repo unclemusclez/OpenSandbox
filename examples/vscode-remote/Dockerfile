@@ -53,6 +53,14 @@ RUN useradd -m -s /bin/bash vscode \
 # Set working directory
 WORKDIR /workspace
 
+# Install VS Code extensions from extensions.txt
+COPY extensions.txt /tmp/extensions.txt
+RUN while IFS= read -r ext; do \
+      [ -z "$ext" ] && continue; \
+      code-server --install-extension "$ext" || echo "WARNING: Failed to install $ext"; \
+    done < /tmp/extensions.txt \
+    && rm /tmp/extensions.txt
+
 # Switch to non-root user
 USER vscode
 
