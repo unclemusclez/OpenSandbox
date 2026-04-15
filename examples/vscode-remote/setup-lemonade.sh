@@ -136,6 +136,7 @@ python3 "${LEMONADE_PY}" write-model-configs \
     --model-name "${MODEL_NAME}" \
     --num-users "${NUM_USERS}" \
     --llamacpp-backend "${BACKEND}"
+sudo chown -R "$(id -u):$(id -g)" "${CONFIG_DIR}"
 
 API_KEY=""
 ADMIN_KEY=""

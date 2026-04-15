@@ -141,6 +141,8 @@ def _sudo_write_json(path: Path, data: dict) -> None:
         tmp_path = Path(f"/tmp/{path.name}")
         tmp_path.write_text(content)
         _run_cmd(["cp", str(tmp_path), str(path)], sudo=True)
+        owner = f"{os.getuid()}:{os.getgid()}"
+        _run_cmd(["chown", owner, str(path)], sudo=True)
         tmp_path.unlink(missing_ok=True)
 
 
