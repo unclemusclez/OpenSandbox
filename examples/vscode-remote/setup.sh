@@ -86,7 +86,7 @@ echo "[Setup] Installing OpenSandbox server and CLI..."
 python3 -m venv ~/.venv
 . ~/.venv/bin/activate
 pip install "${REPO_DIR}/server"
-cp "${REPO_DIR}/opensandbox_server/examples/example.config.toml" ~/.sandbox.toml
+cp "${REPO_DIR}/server/opensandbox_server/examples/example.config.toml" ~/.sandbox.toml
 pip install "${REPO_DIR}/cli"
 
 echo "[Setup] Adding user to docker group..."
