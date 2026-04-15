@@ -49,20 +49,21 @@ python examples/vscode-remote/main.py --cleanup
 # Build Docker image
 docker build -t opensandbox/vscode:latest examples/vscode-remote/
 
-# Lemonade Server: one-time installation
-python examples/vscode-remote/lemonade_server.py install
-bash examples/vscode-remote/setup-lemonade.sh
+# Lemonade Server: full setup via shell (recommended — service manages its own lifecycle)
+bash examples/vscode-remote/setup-lemonade.sh --generate-keys --external-ip 1.2.3.4
 
-# Lemonade Server: full setup (install + configure + start + pull model + kilo.json)
+# Lemonade Server: full setup via Python wrapper (alternative)
 python examples/vscode-remote/lemonade_server.py run --model Gemma-3-4b-it-GGUF --generate-keys --external-ip 1.2.3.4
 
-# Lemonade Server: configure only
-python examples/vscode-remote/lemonade_server.py configure --generate-keys --kilo-config kilo.json
+# Lemonade Server: service management (it runs as systemd, no long-running process needed)
+sudo systemctl status lemonade-server
+sudo systemctl stop lemonade-server
+sudo systemctl restart lemonade-server
+sudo journalctl -u lemonade-server -f
 
-# Lemonade Server: status / stop / cleanup
-python examples/vscode-remote/lemonade_server.py status
-python examples/vscode-remote/lemonade_server.py stop
-python examples/vscode-remote/lemonade_server.py cleanup
+# Lemonade Server: pull / configure via CLI
+lemonade pull Gemma-3-4b-it-GGUF
+lemonade config set llamacpp.backend=rocm host=0.0.0.0
 
 # Run VS Code instances with Lemonade inference (injects kilo.json into each sandbox)
 python examples/vscode-remote/main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
@@ -216,18 +217,25 @@ With `--workspace-dir /vs-code-remote`, each user gets a host bind mount:
 
 A local Lemonade inference server provides OpenAI-compatible LLM endpoints that VS Code
 extensions (Kilo Code, Continue, Cline) inside sandbox containers can connect to. The
-server runs on the host; sandbox containers reach it via the Docker bridge gateway or
-external IP.
+server runs as a **systemd service** and manages its own lifecycle — no long-running
+Python process needed.
 
-**Key Classes:**
-- **`LemonadeServerManager`**: installs, configures, and manages the Lemonade server lifecycle
-  - `install()` — install via PPA (`ppa:lemonade-team/stable`)
-  - `configure()` — write `/var/lib/lemonade/.cache/lemonade/config.json`
-  - `start()` / `stop()` / `restart()` — systemd service management
-  - `pull_model()` — download model via `lemonade pull`
-  - `load_model()` — load model via HTTP API (`/api/v1/load`)
-  - `generate_kilo_config()` — write `kilo.json` for Kilo Code with auto-detected base URL and API key
-  - `_configure_api_keys()` — generate and persist API keys in systemd override
+**Two ways to set up:**
+1. **`setup-lemonade.sh`** (recommended) — Shell script that uses the `lemonade` CLI
+   and `systemctl` directly. One command does everything: install, configure, generate
+   API keys, pull model, generate kilo.json.
+2. **`lemonade_server.py`** — Python wrapper with `LemonadeServerManager` class.
+   Provides subcommands (`install`, `configure`, `start`, `stop`, `pull`, `run`, etc.)
+   and programmatic access to the same operations. Useful for scripted automation.
+
+**Service management (once installed):**
+```bash
+sudo systemctl start|stop|restart lemonade-server
+sudo systemctl status lemonade-server
+sudo journalctl -u lemonade-server -f
+lemonade config set key=value
+lemonade pull <model>
+```
 
 **Configuration:**
 - Config file: `/var/lib/lemonade/.cache/lemonade/config.json`
@@ -321,8 +329,8 @@ extensions making cross-site requests to github.com — cannot be fixed server-s
 | `nginx_config.py` | `NginxConfigGenerator`; per-port individual configs in sites-available |
 | `ssl_cert.py` | `SSLCertificateGenerator`; mkcert primary with openssl fallback |
 | `generate-certs.py` | Legacy mkcert helper (preserved for local dev) |
-| `lemonade_server.py` | `LemonadeServerManager`; install, configure, start/stop, pull/load models, generate kilo.json |
-| `setup-lemonade.sh` | One-time Lemonade server installation via PPA |
+| `lemonade_server.py` | `LemonadeServerManager`; Python wrapper for install, configure, start/stop, pull/load models, generate kilo.json |
+| `setup-lemonade.sh` | All-in-one shell script: install, configure, generate API keys, pull model, generate kilo.json (recommended) |
 | `kilo.json` | Kilo Code config template for Lemonade OpenAI-compatible provider |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
 | `template.portnumber.available.md` | Nginx template reference showing port-based location blocks |
