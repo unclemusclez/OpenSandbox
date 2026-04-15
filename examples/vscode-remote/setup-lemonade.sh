@@ -139,40 +139,50 @@ lemonade config set port="${PORT}" host="${HOST}" llamacpp.backend="${BACKEND}" 
 echo "[Lemonade] Writing user_models.json..."
 sudo mkdir -p "${CONFIG_DIR}"
 USER_MODELS="${CONFIG_DIR}/user_models.json"
-EXISTING_MODELS="{}"
+USER_MODELS_TMP="$(mktemp)"
 if sudo test -f "${USER_MODELS}"; then
-    EXISTING_MODELS="$(sudo cat "${USER_MODELS}")"
+    sudo cat "${USER_MODELS}" > "${USER_MODELS_TMP}"
+else
+    echo '{}' > "${USER_MODELS_TMP}"
 fi
-python3 -c "
+python3 <<'PYEOF' "${USER_MODELS_TMP}" "${MODEL_NAME}" "${MODEL}"
 import json, sys
-existing = json.loads('''${EXISTING_MODELS}''')
-existing['${MODEL_NAME}'] = {
-    'checkpoint': '${MODEL}',
-    'recipe': 'llamacpp',
-    'size': 31.0
-}
-print(json.dumps(existing, indent=2))
-" | sudo tee "${USER_MODELS}" > /dev/null
+path, model_name, checkpoint = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    existing = json.load(f)
+existing[model_name] = {"checkpoint": checkpoint, "recipe": "llamacpp", "size": 31.0}
+with open(path, "w") as f:
+    json.dump(existing, f, indent=2)
+PYEOF
+sudo cp "${USER_MODELS_TMP}" "${USER_MODELS}"
+rm -f "${USER_MODELS_TMP}"
 echo "[Lemonade] user_models.json updated with ${MODEL_NAME}"
 
 echo "[Lemonade] Writing recipe_options.json..."
 RECIPE_OPTIONS="${CONFIG_DIR}/recipe_options.json"
-EXISTING_OPTIONS="{}"
+RECIPE_OPTIONS_TMP="$(mktemp)"
 if sudo test -f "${RECIPE_OPTIONS}"; then
-    EXISTING_OPTIONS="$(sudo cat "${RECIPE_OPTIONS}")"
+    sudo cat "${RECIPE_OPTIONS}" > "${RECIPE_OPTIONS_TMP}"
+else
+    echo '{}' > "${RECIPE_OPTIONS_TMP}"
 fi
 PREFIXED_NAME="user.${MODEL_NAME}"
 LLAMACPP_ARGS="-ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja --ctx-size ${TOTAL_CTX} --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1 -np ${NUM_USERS}"
-python3 -c "
-import json
-existing = json.loads('''${EXISTING_OPTIONS}''')
-existing['${PREFIXED_NAME}'] = {
-    'ctx_size': ${PER_USER_CTX},
-    'llamacpp_backend': '${BACKEND}',
-    'llamacpp_args': '''${LLAMACPP_ARGS}'''
+python3 <<'PYEOF' "${RECIPE_OPTIONS_TMP}" "${PREFIXED_NAME}" "${BACKEND}" "${PER_USER_CTX}" "${LLAMACPP_ARGS}"
+import json, sys
+path, prefixed_name, backend, ctx_size, llamacpp_args = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+with open(path) as f:
+    existing = json.load(f)
+existing[prefixed_name] = {
+    "ctx_size": ctx_size,
+    "llamacpp_backend": backend,
+    "llamacpp_args": llamacpp_args,
 }
-print(json.dumps(existing, indent=2))
-" | sudo tee "${RECIPE_OPTIONS}" > /dev/null
+with open(path, "w") as f:
+    json.dump(existing, f, indent=2)
+PYEOF
+sudo cp "${RECIPE_OPTIONS_TMP}" "${RECIPE_OPTIONS}"
+rm -f "${RECIPE_OPTIONS_TMP}"
 echo "[Lemonade] recipe_options.json updated for ${PREFIXED_NAME}"
 echo "[Lemonade]   ctx-size: ${TOTAL_CTX} (${PER_USER_CTX} x ${NUM_USERS} users)"
 echo "[Lemonade]   -np: ${NUM_USERS}"
