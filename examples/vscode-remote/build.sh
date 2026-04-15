@@ -15,6 +15,9 @@
 
 set -ex
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 TAG=${TAG:-latest}
 PUSH=${PUSH:-false}
 
@@ -29,11 +32,11 @@ if [ "$PUSH" = "true" ]; then
     --platform linux/amd64,linux/arm64 \
     -f examples/vscode-remote/Dockerfile \
     --push \
-    ../..
+    "${REPO_DIR}"
 else
   docker buildx build \
     -t opensandbox/vscode-remote:${TAG} \
     -f examples/vscode-remote/Dockerfile \
     --load \
-    ../..
+    "${REPO_DIR}"
 fi
