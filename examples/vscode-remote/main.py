@@ -359,7 +359,7 @@ Examples:
         "--image",
         type=str,
         default=None,
-        help="Docker image for sandbox (default: opensandbox/vscode:latest)",
+        help="Docker image for sandbox (default: opensandbox/vscode-remote:latest)",
     )
     parser.add_argument(
         "--python-version",
@@ -437,7 +437,7 @@ Examples:
 
     domain = args.domain or os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = args.api_key or os.getenv("SANDBOX_API_KEY")
-    image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode:latest")
+    image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode-remote:latest")
     python_version = args.python_version or os.getenv("PYTHON_VERSION", "3.11")
 
     users: list[UserInfo]

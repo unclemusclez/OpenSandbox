@@ -141,9 +141,23 @@ def _sudo_write_json(path: Path, data: dict) -> None:
         tmp_path = Path(f"/tmp/{path.name}")
         tmp_path.write_text(content)
         _run_cmd(["cp", str(tmp_path), str(path)], sudo=True)
-        owner = f"{os.getuid()}:{os.getgid()}"
-        _run_cmd(["chown", owner, str(path)], sudo=True)
+        service_user = _get_lemonade_user()
+        _run_cmd(["chown", f"{service_user}:{service_user}", str(path)], sudo=True)
         tmp_path.unlink(missing_ok=True)
+
+
+def _get_lemonade_user() -> str:
+    try:
+        result = _run_cmd(
+            ["systemctl", "show", SYSTEMD_SERVICE_NAME, "-p", "User", "--value"],
+            check=False,
+        )
+        user = result.stdout.strip()
+        if user:
+            return user
+    except Exception:
+        pass
+    return "lemonade"
 
 
 def _sudo_read_json(path: Path) -> Optional[dict]:
