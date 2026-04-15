@@ -356,11 +356,16 @@ class LemonadeServerManager:
     def pull_model(self, model: str) -> None:
         """Download a model to the local cache via the lemonade CLI."""
         print(f"[Lemonade] Pulling model: {model}")
-        _run_cmd(
+        env = os.environ.copy()
+        auth_key = self.admin_api_key or self.api_key
+        if auth_key:
+            env["LEMONADE_API_KEY"] = auth_key
+        if self.admin_api_key:
+            env["LEMONADE_ADMIN_API_KEY"] = self.admin_api_key
+        subprocess.run(
             ["lemonade", "pull", model],
             check=True,
-            capture=False,
-            sudo=False,
+            env=env,
         )
         print(f"[Lemonade] Model pulled: {model}")
 

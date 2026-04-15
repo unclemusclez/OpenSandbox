@@ -173,7 +173,13 @@ else
 fi
 
 echo "[Lemonade] Pulling model: ${MODEL}"
-lemonade pull "${MODEL}"
+PULL_ENV=""
+if [[ -n "${ADMIN_KEY}" ]]; then
+    PULL_ENV="LEMONADE_ADMIN_API_KEY=${ADMIN_KEY} LEMONADE_API_KEY=${ADMIN_KEY}"
+elif [[ -n "${API_KEY}" ]]; then
+    PULL_ENV="LEMONADE_API_KEY=${API_KEY}"
+fi
+eval ${PULL_ENV} lemonade pull "${MODEL}"
 
 echo "[Lemonade] Loading model via API..."
 AUTH_HEADER=""
