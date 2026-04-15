@@ -410,6 +410,7 @@ class LemonadeServerManager:
         model: str = DEFAULT_MODEL,
         model_name: str = DEFAULT_MODEL_NAME,
         num_users: int = 1,
+        llamacpp_backend: str = "rocm",
     ) -> None:
         """Write user_models.json and recipe_options.json for a custom model.
 
@@ -417,6 +418,7 @@ class LemonadeServerManager:
             model: HuggingFace checkpoint (org/repo:variant format).
             model_name: Short model name for user_models.json key (no user. prefix).
             num_users: Number of parallel users; scales ctx-size and -np.
+            llamacpp_backend: llama.cpp backend (auto, rocm, vulkan, cpu).
         """
         user_models_path = self.config_dir / "user_models.json"
         recipe_options_path = self.config_dir / "recipe_options.json"
@@ -449,7 +451,7 @@ class LemonadeServerManager:
         prefixed_name = f"user.{model_name}"
         existing_options[prefixed_name] = {
             "ctx_size": PER_USER_CTX,
-            "llamacpp_backend": "rocm",
+            "llamacpp_backend": llamacpp_backend,
             "llamacpp_args": llamacpp_args,
         }
         _sudo_write_json(recipe_options_path, existing_options)
@@ -611,6 +613,7 @@ async def cmd_run(
         model=model,
         model_name=model_name,
         num_users=num_users,
+        llamacpp_backend=llamacpp_backend,
     )
 
     manager.configure(
@@ -855,6 +858,93 @@ Examples:
         help="Generate kilo.json for Kilo Code at this path (default: ./kilo.json when --generate-keys is set)",
     )
 
+    count_users_parser = subparsers.add_parser(
+        "count-users",
+        help="Print number of users from a groups.yaml file",
+    )
+    count_users_parser.add_argument(
+        "--groups",
+        type=str,
+        required=True,
+        help="Path to groups.yaml file",
+    )
+    count_users_parser.add_argument(
+        "--group",
+        type=str,
+        default=None,
+        help="Filter to a single group from groups.yaml",
+    )
+
+    write_model_configs_parser = subparsers.add_parser(
+        "write-model-configs",
+        help="Write user_models.json and recipe_options.json",
+    )
+    write_model_configs_parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"HuggingFace checkpoint (default: {DEFAULT_MODEL})",
+    )
+    write_model_configs_parser.add_argument(
+        "--model-name",
+        type=str,
+        default=DEFAULT_MODEL_NAME,
+        help=f"Short model name (default: {DEFAULT_MODEL_NAME})",
+    )
+    write_model_configs_parser.add_argument(
+        "--num-users",
+        type=int,
+        default=1,
+        help="Number of parallel users; scales ctx-size and -np (default: 1)",
+    )
+    write_model_configs_parser.add_argument(
+        "--llamacpp-backend",
+        type=str,
+        default="rocm",
+        help="llama.cpp backend (default: rocm)",
+    )
+
+    generate_kilo_parser = subparsers.add_parser(
+        "generate-kilo-config",
+        help="Generate kilo.json for Kilo Code",
+    )
+    generate_kilo_parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"HuggingFace checkpoint (default: {DEFAULT_MODEL})",
+    )
+    generate_kilo_parser.add_argument(
+        "--model-name",
+        type=str,
+        default=DEFAULT_MODEL_NAME,
+        help=f"Short model name (default: {DEFAULT_MODEL_NAME})",
+    )
+    generate_kilo_parser.add_argument(
+        "--external-ip",
+        type=str,
+        default=None,
+        help="External IP for sandbox access URL",
+    )
+    generate_kilo_parser.add_argument(
+        "--output",
+        type=str,
+        default="kilo.json",
+        help="Output path for kilo.json (default: kilo.json)",
+    )
+    generate_kilo_parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key to include in kilo.json",
+    )
+    generate_kilo_parser.add_argument(
+        "--admin-api-key",
+        type=str,
+        default=None,
+        help="Admin API key (preferred over --api-key)",
+    )
+
     subparsers.add_parser("cleanup", help="Stop server and clean up")
 
     args = parser.parse_args()
@@ -918,6 +1008,27 @@ Examples:
                 admin_api_key=args.admin_api_key,
                 kilo_config=args.kilo_config,
             )
+        )
+    elif args.command == "count-users":
+        count = load_user_count(args.groups, args.group)
+        print(count)
+    elif args.command == "write-model-configs":
+        manager.write_model_configs(
+            model=args.model,
+            model_name=args.model_name,
+            num_users=args.num_users,
+            llamacpp_backend=args.llamacpp_backend,
+        )
+    elif args.command == "generate-kilo-config":
+        mgr = LemonadeServerManager(
+            api_key=args.api_key,
+            admin_api_key=args.admin_api_key,
+        )
+        mgr.generate_kilo_config(
+            model=args.model,
+            model_name=args.model_name,
+            external_ip=args.external_ip,
+            output_path=Path(args.output),
         )
     elif args.command == "cleanup":
         manager.cleanup()
