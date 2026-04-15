@@ -136,7 +136,8 @@ python3 "${LEMONADE_PY}" write-model-configs \
     --model-name "${MODEL_NAME}" \
     --num-users "${NUM_USERS}" \
     --llamacpp-backend "${BACKEND}"
-sudo chown -R "$(id -u):$(id -g)" "${CONFIG_DIR}"
+LEMONADE_USER="$(systemctl show lemonade-server -p User --value 2>/dev/null || echo lemonade)"
+sudo chown -R "${LEMONADE_USER}:${LEMONADE_USER}" "${CONFIG_DIR}"
 
 API_KEY=""
 ADMIN_KEY=""
