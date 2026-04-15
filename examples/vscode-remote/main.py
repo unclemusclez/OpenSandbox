@@ -172,12 +172,12 @@ async def _inject_kilo_config(
             f"run setup-lemonade.sh --generate-keys to generate real API keys"
         )
 
-    kilo_dir = "/workspace/.kilo"
+    kilo_dir = "/home/vscode/.config/kilo"
     await sandbox.commands.run(f"mkdir -p {kilo_dir}")
     escaped = config_content.replace("'", "'\\''")
-    write_cmd = f"echo '{escaped}' > {kilo_dir}/kilo.json"
+    write_cmd = f"echo '{escaped}' > {kilo_dir}/config.json"
     await sandbox.commands.run(write_cmd)
-    print(f"[{user.label}] Injected kilo.json -> {kilo_dir}/kilo.json")
+    print(f"[{user.label}] Injected kilo config -> {kilo_dir}/config.json")
 
 
 async def _inject_vscode_settings(
@@ -211,8 +211,6 @@ async def create_instance(
     vscode_settings: Optional[str] = None,
 ) -> SandboxInstance:
     env = {"PYTHON_VERSION": python_version}
-
-    workspace_path = f"/workspace/{user.workspace}"
 
     volumes: list[Volume] | None = None
     if workspace_dir:
@@ -251,8 +249,8 @@ async def create_instance(
         auth_flag = "--auth password"
 
     if not volumes:
-        mkdir_cmd = f"mkdir -p {workspace_path}"
-        await sandbox.commands.run(mkdir_cmd)
+        await sandbox.commands.run("mkdir -p /workspace")
+        await sandbox.commands.run("chown -R vscode:vscode /workspace")
 
     if lemonade_config:
         await _inject_kilo_config(user, sandbox, lemonade_config)
@@ -570,13 +568,13 @@ Examples:
             if https_url:
                 print(f"      URL: {https_url}")
             print(f"      Local: {http_url}")
-            print(f"      Workspace: /workspace/{inst.user.workspace}")
+            print(f"      Workspace: /workspace")
             if args.workspace_dir:
                 print(f"      Host path: {os.path.join(args.workspace_dir, inst.user.workspace)}")
             if inst.password:
                 print(f"      Password: {inst.password}")
             if args.lemonade:
-                print(f"      Kilo Code: /workspace/.kilo/kilo.json")
+                print(f"      Kilo Code: /home/vscode/.config/kilo/config.json")
 
         print()
         if use_nginx and ca_cert_path:
