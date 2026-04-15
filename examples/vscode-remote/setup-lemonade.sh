@@ -145,7 +145,7 @@ if sudo test -f "${USER_MODELS}"; then
 fi
 python3 -c "
 import json, sys
-existing = json.loads('''${EXISTING_MODEPS}''')
+existing = json.loads('''${EXISTING_MODELS}''')
 existing['${MODEL_NAME}'] = {
     'checkpoint': '${MODEL}',
     'recipe': 'llamacpp',
