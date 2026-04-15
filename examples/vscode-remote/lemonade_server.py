@@ -38,7 +38,7 @@ Usage:
     python lemonade_server.py pull --model Gemma-3-4b-it-GGUF
 
     # Full setup (install + configure + start + pull model)
-    python lemonade_server.py run --model Gemma-3-4b-it-GGUF --external-ip 1.2.3.4
+    python lemonade_server.py run --num-users 4 --external-ip 1.2.3.4
 
     # Check server status
     python lemonade_server.py status
@@ -62,15 +62,19 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 LEMONADE_CONFIG_DIR = Path("/var/lib/lemonade/.cache/lemonade")
 LEMONADE_CONFIG_PATH = LEMONADE_CONFIG_DIR / "config.json"
 SYSTEMD_SERVICE_NAME = "lemonade-server"
 SYSTEMD_OVERRIDE_DIR = Path(
     f"/etc/systemd/system/{SYSTEMD_SERVICE_NAME}.service.d"
 )
-DEFAULT_MODEL = "Gemma-3-4b-it-GGUF"
+DEFAULT_MODEL = "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL"
+DEFAULT_MODEL_NAME = "gemma-4-31b-it"
 DEFAULT_PORT = 13305
 DEFAULT_HOST = "0.0.0.0"
+PER_USER_CTX = 262144
 
 LLAMACPP_DEFAULTS: dict = {
     "backend": "auto",
@@ -171,6 +175,20 @@ def detect_docker_host_ip() -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def load_user_count(groups_file: str, group_filter: Optional[str] = None) -> int:
+    """Count total users from a groups.yaml file."""
+    with open(groups_file) as f:
+        data = yaml.safe_load(f)
+
+    groups = data.get("groups", {})
+    count = 0
+    for group_name, group_data in groups.items():
+        if group_filter and group_name != group_filter:
+            continue
+        count += len(group_data.get("users", []))
+    return count
 
 
 class LemonadeServerManager:
@@ -387,9 +405,63 @@ class LemonadeServerManager:
             return config.get("port", DEFAULT_PORT)
         return DEFAULT_PORT
 
+    def write_model_configs(
+        self,
+        model: str = DEFAULT_MODEL,
+        model_name: str = DEFAULT_MODEL_NAME,
+        num_users: int = 1,
+    ) -> None:
+        """Write user_models.json and recipe_options.json for a custom model.
+
+        Args:
+            model: HuggingFace checkpoint (org/repo:variant format).
+            model_name: Short model name for user_models.json key (no user. prefix).
+            num_users: Number of parallel users; scales ctx-size and -np.
+        """
+        user_models_path = self.config_dir / "user_models.json"
+        recipe_options_path = self.config_dir / "recipe_options.json"
+
+        existing_models = _sudo_read_json(user_models_path) or {}
+        existing_models[model_name] = {
+            "checkpoint": model,
+            "recipe": "llamacpp",
+            "size": 31.0,
+        }
+        _sudo_write_json(user_models_path, existing_models)
+        print(f"[Lemonade] user_models.json updated with {model_name}")
+
+        total_ctx = PER_USER_CTX * num_users
+        llamacpp_args = (
+            f"-ngl 999 "
+            f"-b 8192 -ub 8192 "
+            f"-to 3600 "
+            f"-ctk q8_0 -ctv q8_0 "
+            f"--jinja "
+            f"--ctx-size {total_ctx} "
+            f"--temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 "
+            f"--repeat-penalty 1.0 "
+            f"--no-webui "
+            f"--threads-http -1 --threads -1 "
+            f"-np {num_users}"
+        )
+
+        existing_options = _sudo_read_json(recipe_options_path) or {}
+        prefixed_name = f"user.{model_name}"
+        existing_options[prefixed_name] = {
+            "ctx_size": PER_USER_CTX,
+            "llamacpp_backend": "rocm",
+            "llamacpp_args": llamacpp_args,
+        }
+        _sudo_write_json(recipe_options_path, existing_options)
+        print(f"[Lemonade] recipe_options.json updated for {prefixed_name}")
+        print(f"[Lemonade]   ctx-size: {total_ctx} ({PER_USER_CTX} x {num_users} users)")
+        print(f"[Lemonade]   -np: {num_users}")
+        print(f"[Lemonade]   llamacpp_args: {llamacpp_args}")
+
     def generate_kilo_config(
         self,
         model: str = DEFAULT_MODEL,
+        model_name: str = DEFAULT_MODEL_NAME,
         external_ip: Optional[str] = None,
         output_path: Optional[Path] = None,
     ) -> Path:
@@ -399,7 +471,8 @@ class LemonadeServerManager:
         sandbox containers: external_ip > Docker bridge gateway > localhost.
 
         Args:
-            model: Model ID to configure in Kilo Code.
+            model: HuggingFace checkpoint for display name.
+            model_name: Short model name used as kilo.json model ID.
             external_ip: External IP for sandbox access.
             output_path: Path to write kilo.json. Defaults to ./kilo.json.
 
@@ -419,12 +492,11 @@ class LemonadeServerManager:
         base_url = f"http://{base_host}:{port}/v1"
         auth_key = self.admin_api_key or self.api_key or "none"
 
-        model_id = model.lower().replace("-", "-").replace(".", "-")
         config: dict = {
             "provider": {
                 "lemonade": {
                     "models": {
-                        model_id: {
+                        model_name: {
                             "name": model,
                             "limit": {
                                 "context": self._get_ctx_size(),
@@ -438,7 +510,7 @@ class LemonadeServerManager:
                     },
                 },
             },
-            "model": f"lemonade/{model_id}",
+            "model": f"lemonade/{model_name}",
         }
 
         target = output_path or Path("kilo.json")
@@ -448,7 +520,7 @@ class LemonadeServerManager:
         print(f"[Lemonade] Kilo Code config written to {target}")
         print(f"[Lemonade]   Provider:  lemonade")
         print(f"[Lemonade]   Base URL:  {base_url}")
-        print(f"[Lemonade]   Model:     lemonade/{model_id}")
+        print(f"[Lemonade]   Model:     lemonade/{model_name}")
         if auth_key != "none":
             print(f"[Lemonade]   API Key:   {auth_key}")
         return target
@@ -502,11 +574,15 @@ def _print_endpoint_info(
 
 async def cmd_run(
     model: str = DEFAULT_MODEL,
+    model_name: str = DEFAULT_MODEL_NAME,
     port: int = DEFAULT_PORT,
     host: str = DEFAULT_HOST,
     llamacpp_backend: str = "rocm",
     ctx_size: int = 4096,
     max_loaded_models: int = 1,
+    groups_file: Optional[str] = None,
+    group_filter: Optional[str] = None,
+    num_users: int = 1,
     generate_keys: bool = False,
     skip_install: bool = False,
     external_ip: Optional[str] = None,
@@ -514,6 +590,15 @@ async def cmd_run(
     admin_api_key: Optional[str] = None,
     kilo_config: Optional[str] = None,
 ) -> None:
+    if groups_file:
+        num_users = load_user_count(groups_file, group_filter)
+        if num_users == 0:
+            print("[Lemonade] Error: No users found in groups config")
+            sys.exit(1)
+        print(f"[Lemonade] {num_users} user(s) from {groups_file}")
+    elif num_users < 1:
+        num_users = 1
+
     manager = LemonadeServerManager(
         api_key=api_key,
         admin_api_key=admin_api_key,
@@ -522,11 +607,17 @@ async def cmd_run(
     if not skip_install and not manager.is_installed():
         manager.install()
 
+    manager.write_model_configs(
+        model=model,
+        model_name=model_name,
+        num_users=num_users,
+    )
+
     manager.configure(
         port=port,
         host=host,
         llamacpp_backend=llamacpp_backend,
-        ctx_size=ctx_size,
+        ctx_size=PER_USER_CTX,
         max_loaded_models=max_loaded_models,
         generate_keys=generate_keys,
     )
@@ -540,10 +631,11 @@ async def cmd_run(
         print("[Lemonade] Error: Server failed to start")
         sys.exit(1)
 
+    prefixed_model = f"user.{model_name}"
     manager.pull_model(model)
 
     await asyncio.sleep(2)
-    manager.load_model(model)
+    manager.load_model(prefixed_model)
 
     _print_endpoint_info(manager, model, port, external_ip)
 
@@ -551,6 +643,7 @@ async def cmd_run(
         output = Path(kilo_config) if kilo_config else Path("kilo.json")
         manager.generate_kilo_config(
             model=model,
+            model_name=model_name,
             external_ip=external_ip,
             output_path=output,
         )
@@ -681,7 +774,31 @@ Examples:
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help=f"Model to pull and load (default: {DEFAULT_MODEL})",
+        help=f"HuggingFace checkpoint to pull (default: {DEFAULT_MODEL})",
+    )
+    run_parser.add_argument(
+        "--model-name",
+        type=str,
+        default=DEFAULT_MODEL_NAME,
+        help=f"Short model name for user_models.json (default: {DEFAULT_MODEL_NAME})",
+    )
+    run_parser.add_argument(
+        "--groups",
+        type=str,
+        default=None,
+        help="Path to groups.yaml; user count scales ctx-size and parallel slots",
+    )
+    run_parser.add_argument(
+        "--group",
+        type=str,
+        default=None,
+        help="Filter to a single group from groups.yaml for user count",
+    )
+    run_parser.add_argument(
+        "--num-users",
+        type=int,
+        default=1,
+        help="Override number of parallel users (default: 1, or auto from --groups)",
     )
     run_parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"Server port (default: {DEFAULT_PORT})"
@@ -764,7 +881,8 @@ Examples:
         )
         if args.kilo_config and (manager.api_key or manager.admin_api_key):
             manager.generate_kilo_config(
-                model=args.model,
+                model=getattr(args, "model", DEFAULT_MODEL),
+                model_name=getattr(args, "model_name", DEFAULT_MODEL_NAME),
                 external_ip=args.external_ip,
                 output_path=Path(args.kilo_config) if args.kilo_config else None,
             )
@@ -784,11 +902,15 @@ Examples:
         asyncio.run(
             cmd_run(
                 model=args.model,
+                model_name=args.model_name,
                 port=args.port,
                 host=args.host,
                 llamacpp_backend=args.llamacpp_backend,
                 ctx_size=args.ctx_size,
                 max_loaded_models=args.max_loaded_models,
+                groups_file=args.groups,
+                group_filter=args.group,
+                num_users=args.num_users,
                 generate_keys=args.generate_keys,
                 skip_install=args.skip_install,
                 external_ip=args.external_ip,

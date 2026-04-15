@@ -2,10 +2,10 @@
   "provider": {
     "lemonade": {
       "models": {
-        "gemma-3-4b-it": {
-          "name": "Gemma 3 4B IT",
+        "gemma-4-31b-it": {
+          "name": "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL",
           "limit": {
-            "context": 4096,
+            "context": 262144,
             "output": 4096
           }
         }
@@ -16,5 +16,5 @@
       }
     }
   },
-  "model": "lemonade/gemma-3-4b-it"
+  "model": "lemonade/gemma-4-31b-it"
 }

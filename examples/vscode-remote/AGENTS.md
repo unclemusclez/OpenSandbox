@@ -50,10 +50,10 @@ python examples/vscode-remote/main.py --cleanup
 docker build -t opensandbox/vscode:latest examples/vscode-remote/
 
 # Lemonade Server: full setup via shell (recommended — service manages its own lifecycle)
-bash examples/vscode-remote/setup-lemonade.sh --generate-keys --external-ip 1.2.3.4
+bash examples/vscode-remote/setup-lemonade.sh --groups groups.yaml --generate-keys --external-ip 1.2.3.4
 
 # Lemonade Server: full setup via Python wrapper (alternative)
-python examples/vscode-remote/lemonade_server.py run --model Gemma-3-4b-it-GGUF --generate-keys --external-ip 1.2.3.4
+python examples/vscode-remote/lemonade_server.py run --groups groups.yaml --generate-keys --external-ip 1.2.3.4
 
 # Lemonade Server: service management (it runs as systemd, no long-running process needed)
 sudo systemctl status lemonade-server
@@ -62,7 +62,7 @@ sudo systemctl restart lemonade-server
 sudo journalctl -u lemonade-server -f
 
 # Lemonade Server: pull / configure via CLI
-lemonade pull Gemma-3-4b-it-GGUF
+lemonade pull unsloth/gemma-4-31B-it-GGUF:Q8_K_XL
 lemonade config set llamacpp.backend=rocm host=0.0.0.0
 
 # Run VS Code instances with Lemonade inference (injects kilo.json into each sandbox)
@@ -242,6 +242,52 @@ lemonade pull <model>
 - API keys stored in `/etc/systemd/system/lemonade-server.service.d/override.conf`
 - Default port: `13305`, default host: `0.0.0.0`
 - Default backend: `rocm` (auto-detected by Lemonade; can be overridden with `--llamacpp-backend`)
+- Custom models: `user_models.json` and `recipe_options.json` in the cache directory
+
+**Default Model:**
+- Checkpoint: `unsloth/gemma-4-31B-it-GGUF:Q8_K_XL`
+- Short name: `gemma-4-31b-it` (registered as `user.gemma-4-31b-it`)
+- Recipe: `llamacpp` with ROCm backend
+
+**Per-User Scaling:**
+When `--groups groups.yaml` is passed, the number of users is counted automatically and
+scales the llama.cpp args in `recipe_options.json`:
+
+| Parameter | Value |
+|-----------|-------|
+| `--ctx-size` | `262144 × num_users` |
+| `-np` | `num_users` |
+| Per-slot `ctx_size` | `262144` |
+
+Full llama.cpp args:
+```
+-ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja
+--ctx-size <262144 * num_users> --temp 1.0 --top-k 64 --top-p 0.95
+--min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1
+-np <num_users>
+```
+
+**user_models.json example:**
+```json
+{
+    "gemma-4-31b-it": {
+        "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL",
+        "recipe": "llamacpp",
+        "size": 31.0
+    }
+}
+```
+
+**recipe_options.json example (4 users):**
+```json
+{
+    "user.gemma-4-31b-it": {
+        "ctx_size": 262144,
+        "llamacpp_backend": "rocm",
+        "llamacpp_args": "-ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja --ctx-size 1048576 --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1 -np 4"
+    }
+}
+```
 
 **API Key Security:**
 | Env Variable | Access Level |
@@ -252,16 +298,16 @@ lemonade pull <model>
 When both are set, either key is accepted for regular endpoints; admin key is required for internal.
 
 **Kilo Code Integration:**
-1. `lemonade_server.py run --generate-keys` generates API keys and writes `kilo.json`
-2. `kilo.json` contains: provider name (`lemonade`), base URL (auto-detected), API key, model ID
+1. `setup-lemonade.sh --groups groups.yaml --generate-keys` generates API keys and writes `kilo.json`
+2. `kilo.json` contains: provider name (`lemonade`), base URL (auto-detected), API key, model ID (`gemma-4-31b-it`)
 3. Base URL resolution order: `--external-ip` > Docker bridge gateway > `localhost`
 4. `main.py --lemonade kilo.json` injects the config into each sandbox at `/workspace/.kilo/kilo.json`
 5. Kilo Code extension in the sandbox reads the config and connects to the Lemonade server
 
 **Full Workflow:**
 ```bash
-# Terminal 1: Start Lemonade server (generates kilo.json)
-python lemonade_server.py run --model Gemma-3-4b-it-GGUF --generate-keys --external-ip 1.2.3.4
+# Terminal 1: Start Lemonade server with groups-based user count (generates kilo.json)
+python lemonade_server.py run --groups groups.yaml --generate-keys --external-ip 1.2.3.4
 
 # Terminal 2: Start VS Code sandboxes with Lemonade inference
 python main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
@@ -332,6 +378,7 @@ extensions making cross-site requests to github.com — cannot be fixed server-s
 | `lemonade_server.py` | `LemonadeServerManager`; Python wrapper for install, configure, start/stop, pull/load models, generate kilo.json |
 | `setup-lemonade.sh` | All-in-one shell script: install, configure, generate API keys, pull model, generate kilo.json (recommended) |
 | `kilo.json` | Kilo Code config template for Lemonade OpenAI-compatible provider |
+| `vscode-settings.jsonc` | VS Code settings template injected into each sandbox's code-server |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
 | `template.portnumber.available.md` | Nginx template reference showing port-based location blocks |
 | `../vscode/main.py` | Reference template: single-instance, minimal |
