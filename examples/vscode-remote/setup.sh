@@ -80,7 +80,7 @@ if [[ ! -f "${REPO_DIR}/server/pyproject.toml" ]]; then
 fi
 
 echo "[Setup] Building Docker image..."
-docker build -t opensandbox/vscode:latest "${SCRIPT_DIR}/"
+docker build -t opensandbox/vscode:latest -f "${SCRIPT_DIR}/Dockerfile" "${REPO_DIR}"
 
 echo "[Setup] Installing OpenSandbox server and CLI..."
 python3 -m venv ~/.venv

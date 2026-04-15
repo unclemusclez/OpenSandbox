@@ -58,7 +58,7 @@ WORKDIR /workspace
 USER vscode
 
 # Install VS Code extensions from extensions.txt
-COPY --chown=vscode:vscode extensions.txt /tmp/extensions.txt
+COPY --chown=vscode:vscode examples/vscode-remote/extensions.txt /tmp/extensions.txt
 RUN while IFS= read -r ext; do \
       [ -z "$ext" ] && continue; \
       code-server --install-extension "$ext" || echo "WARNING: Failed to install $ext"; \
