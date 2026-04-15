@@ -12,8 +12,10 @@ info:
     observability schema for OpenSandbox. Structured telemetry, long-term
     retention, filtering, pagination, and streaming may be provided separately.
 
-    Successful responses are display-oriented `text/plain` output. Clients should
-    not parse individual lines as a stable schema. Servers may impose
+    Successful responses return a JSON descriptor whose diagnostic payload is
+    either embedded inline or made available through a download URL. The diagnostic
+    payload itself is display-oriented `text/plain` content. Clients should not
+    parse individual payload lines as a stable schema. Servers may impose
     implementation-defined retention and response size limits.
 
     ## Authentication
@@ -38,14 +40,14 @@ security:
   - apiKeyAuth: []
 tags:
   - name: Diagnostics
-    description: Plain-text sandbox troubleshooting snapshots
+    description: Sandbox troubleshooting payload descriptors
 paths:
   /sandboxes/{sandboxId}/diagnostics/logs:
     get:
       tags: [Diagnostics]
       summary: Get diagnostic logs
       description: |
-        Retrieve a best-effort plain-text snapshot of sandbox diagnostic logs.
+        Retrieve a best-effort descriptor for sandbox diagnostic log text.
 
         Logs are not limited to a structured observability model. Depending on the
         selected `scope` and server configuration, log text may include sandbox
@@ -53,30 +55,46 @@ paths:
         or other implementation-defined diagnostic material.
 
         This endpoint does not provide streaming, pagination, or a stable line-level
-        schema in this version. The server returns currently available diagnostic
-        text for the requested scope, subject to implementation-defined retention
-        and response size limits.
-
-        This version only supports `text/plain` successful responses. Clients should
-        send `Accept: text/plain`. If `Accept` is omitted or includes `*/*`, the
-        server returns `text/plain`. Requests whose `Accept` header does not allow
-        `text/plain` return `406 Not Acceptable`.
+        schema in this version. The server returns a JSON descriptor for currently
+        available diagnostic text for the requested scope, subject to
+        implementation-defined retention and response size limits. The descriptor
+        either embeds the text as `content` or returns a `contentUrl` where the
+        text can be downloaded.
       parameters:
         - $ref: '#/components/parameters/SandboxId'
         - $ref: '#/components/parameters/DiagnosticScope'
       responses:
         '200':
-          description: Diagnostic log text snapshot
+          description: Diagnostic log content descriptor
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/DiagnosticContentResponse'
               examples:
-                container:
-                  summary: Container log text
-                  value: |
-                    2026-03-25T10:01:13Z execd started
-                    2026-03-25T10:01:14Z sandbox process ready
+                inline:
+                  summary: Inline container log text
+                  value:
+                    sandboxId: sbx_123
+                    kind: logs
+                    scope: container
+                    delivery: inline
+                    contentType: text/plain; charset=utf-8
+                    content: |
+                      2026-03-25T10:01:13Z execd started
+                      2026-03-25T10:01:14Z sandbox process ready
+                    truncated: false
+                url:
+                  summary: Downloadable container log text
+                  value:
+                    sandboxId: sbx_123
+                    kind: logs
+                    scope: container
+                    delivery: url
+                    contentType: text/plain; charset=utf-8
+                    contentUrl: https://example.com/diagnostics/sbx_123/logs.txt
+                    contentLength: 10485760
+                    expiresAt: "2026-04-14T10:30:00Z"
+                    truncated: false
           headers:
             X-Request-ID:
               $ref: '#/components/headers/XRequestId'
@@ -88,8 +106,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '406':
-          $ref: '#/components/responses/NotAcceptable'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /sandboxes/{sandboxId}/diagnostics/events:
@@ -97,7 +113,7 @@ paths:
       tags: [Diagnostics]
       summary: Get diagnostic events
       description: |
-        Retrieve a best-effort plain-text snapshot of sandbox diagnostic events.
+        Retrieve a best-effort descriptor for sandbox diagnostic event text.
 
         Events are rendered as diagnostic text rather than exposed as a stable
         structured event model. Depending on the selected `scope` and runtime, event
@@ -106,30 +122,46 @@ paths:
         other implementation-defined event material.
 
         This endpoint does not provide streaming, pagination, or a stable line-level
-        schema in this version. The server returns currently available diagnostic
-        event text for the requested scope, subject to implementation-defined
-        retention and response size limits.
-
-        This version only supports `text/plain` successful responses. Clients should
-        send `Accept: text/plain`. If `Accept` is omitted or includes `*/*`, the
-        server returns `text/plain`. Requests whose `Accept` header does not allow
-        `text/plain` return `406 Not Acceptable`.
+        schema in this version. The server returns a JSON descriptor for currently
+        available diagnostic event text for the requested scope, subject to
+        implementation-defined retention and response size limits. The descriptor
+        either embeds the text as `content` or returns a `contentUrl` where the
+        text can be downloaded.
       parameters:
         - $ref: '#/components/parameters/SandboxId'
         - $ref: '#/components/parameters/DiagnosticScope'
       responses:
         '200':
-          description: Diagnostic event text snapshot
+          description: Diagnostic event content descriptor
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/DiagnosticContentResponse'
               examples:
-                runtime:
-                  summary: Runtime event text
-                  value: |
-                    2026-03-25T10:01:13Z runtime Normal Scheduled Successfully assigned sandbox pod
-                    2026-03-25T10:01:14Z runtime Normal Pulled Container image pulled
+                inline:
+                  summary: Inline runtime event text
+                  value:
+                    sandboxId: sbx_123
+                    kind: events
+                    scope: runtime
+                    delivery: inline
+                    contentType: text/plain; charset=utf-8
+                    content: |
+                      2026-03-25T10:01:13Z runtime Normal Scheduled Successfully assigned sandbox pod
+                      2026-03-25T10:01:14Z runtime Normal Pulled Container image pulled
+                    truncated: false
+                url:
+                  summary: Downloadable runtime event text
+                  value:
+                    sandboxId: sbx_123
+                    kind: events
+                    scope: runtime
+                    delivery: url
+                    contentType: text/plain; charset=utf-8
+                    contentUrl: https://example.com/diagnostics/sbx_123/events.txt
+                    contentLength: 5242880
+                    expiresAt: "2026-04-14T10:30:00Z"
+                    truncated: false
           headers:
             X-Request-ID:
               $ref: '#/components/headers/XRequestId'
@@ -141,8 +173,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '406':
-          $ref: '#/components/responses/NotAcceptable'
         '500':
           $ref: '#/components/responses/InternalServerError'
 components:
@@ -227,17 +257,6 @@ components:
       headers:
         X-Request-ID:
           $ref: '#/components/headers/XRequestId'
-    NotAcceptable:
-      description: |
-        Requested media type is not supported by this operation. This version only
-        supports `text/plain` successful responses.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-      headers:
-        X-Request-ID:
-          $ref: '#/components/headers/XRequestId'
     InternalServerError:
       description: An unexpected server error occurred
       content:
@@ -248,6 +267,65 @@ components:
         X-Request-ID:
           $ref: '#/components/headers/XRequestId'
   schemas:
+    DiagnosticContentResponse:
+      type: object
+      description: |
+        Descriptor for diagnostic text content.
+
+        When `delivery` is `inline`, servers MUST include `content` with the
+        diagnostic text and MUST omit `contentUrl` / `expiresAt`.
+
+        When `delivery` is `url`, servers MUST include `contentUrl` and `expiresAt`
+        to identify where the diagnostic text can be downloaded and MUST omit
+        `content`.
+      required: [sandboxId, kind, scope, delivery, contentType, truncated]
+      properties:
+        sandboxId:
+          type: string
+          description: Unique sandbox identifier.
+        kind:
+          type: string
+          description: Diagnostic payload kind.
+          enum: [logs, events]
+        scope:
+          type: string
+          description: Diagnostic scope used for this response.
+        delivery:
+          type: string
+          description: How the diagnostic text payload is delivered.
+          enum: [inline, url]
+        contentType:
+          type: string
+          description: Media type of the diagnostic payload.
+          examples: ["text/plain; charset=utf-8"]
+        content:
+          type: string
+          description: Inline diagnostic text payload. Present when `delivery` is `inline`.
+        contentUrl:
+          type: string
+          format: uri
+          description: URL where the diagnostic text payload can be downloaded. Present when `delivery` is `url`.
+        contentLength:
+          type: integer
+          minimum: 0
+          description: Payload size in bytes when known.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Expiration time for the download URL. Present when `delivery` is `url`.
+        truncated:
+          type: boolean
+          description: |
+            Whether the diagnostic payload returned inline or by URL was
+            intentionally truncated by the server. This does not indicate backend
+            retention gaps such as expired Kubernetes Events; those should be
+            reported through `warnings` when available.
+        warnings:
+          type: array
+          description: Non-fatal warnings about payload completeness or availability.
+          items:
+            type: string
+      additionalProperties: false
     ErrorResponse:
       type: object
       description: |

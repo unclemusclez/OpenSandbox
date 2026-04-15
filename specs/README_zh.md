@@ -39,11 +39,11 @@
 
 **沙箱诊断 API**
 
-定义用于排障的 best-effort 纯文本快照接口，用于获取沙箱诊断日志和事件。该规范不定义结构化审计或可观测性模型。
+定义用于排障的 best-effort 诊断描述符接口，用于获取沙箱诊断日志和事件。描述符可以内嵌纯文本诊断内容，也可以返回内容下载 URL。该规范不定义结构化审计或可观测性模型。
 
 **主要端点（基础路径 `/v1`）：**
-- `GET /sandboxes/{sandboxId}/diagnostics/logs` - 获取可选 scope 下的诊断日志文本
-- `GET /sandboxes/{sandboxId}/diagnostics/events` - 获取可选 scope 下的诊断事件文本
+- `GET /sandboxes/{sandboxId}/diagnostics/logs` - 获取可选 scope 下的诊断日志内容描述符
+- `GET /sandboxes/{sandboxId}/diagnostics/events` - 获取可选 scope 下的诊断事件内容描述符
 
 **认证方式：**
 - HTTP Header: `OPEN-SANDBOX-API-KEY: your-api-key`

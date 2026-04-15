@@ -39,11 +39,11 @@ Defines the complete lifecycle interfaces for creating, managing, and destroying
 
 **Sandbox Diagnostics API**
 
-Defines best-effort plain-text troubleshooting snapshots for sandbox diagnostic logs and events. This spec does not define a structured audit or observability model.
+Defines best-effort troubleshooting descriptors for sandbox diagnostic logs and events. The descriptors either embed plain-text diagnostic content inline or return a download URL for the content. This spec does not define a structured audit or observability model.
 
 **Main Endpoints (base path `/v1`):**
-- `GET /sandboxes/{sandboxId}/diagnostics/logs` - Retrieve diagnostic log text for an optional scope
-- `GET /sandboxes/{sandboxId}/diagnostics/events` - Retrieve diagnostic event text for an optional scope
+- `GET /sandboxes/{sandboxId}/diagnostics/logs` - Retrieve a diagnostic log content descriptor for an optional scope
+- `GET /sandboxes/{sandboxId}/diagnostics/events` - Retrieve a diagnostic event content descriptor for an optional scope
 
 **Authentication:**
 - HTTP Header: `OPEN-SANDBOX-API-KEY: your-api-key`
