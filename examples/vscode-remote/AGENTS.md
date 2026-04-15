@@ -2,7 +2,8 @@
 
 Use this file for all work in `examples/vscode-remote/`. Reference template: `examples/vscode/`.
 This is a hackathon-focused multi-instance VS Code remote development tool with nginx
-reverse proxy (SSL via mkcert/openssl), groups support, and persistent workspace bind mounts.
+reverse proxy (SSL via mkcert/openssl), groups support, persistent workspace bind mounts,
+and optional local LLM inference via Lemonade Server.
 
 ## Scope
 
@@ -47,6 +48,24 @@ python examples/vscode-remote/main.py --cleanup
 
 # Build Docker image
 docker build -t opensandbox/vscode:latest examples/vscode-remote/
+
+# Lemonade Server: one-time installation
+python examples/vscode-remote/lemonade_server.py install
+bash examples/vscode-remote/setup-lemonade.sh
+
+# Lemonade Server: full setup (install + configure + start + pull model + kilo.json)
+python examples/vscode-remote/lemonade_server.py run --model Gemma-3-4b-it-GGUF --generate-keys --external-ip 1.2.3.4
+
+# Lemonade Server: configure only
+python examples/vscode-remote/lemonade_server.py configure --generate-keys --kilo-config kilo.json
+
+# Lemonade Server: status / stop / cleanup
+python examples/vscode-remote/lemonade_server.py status
+python examples/vscode-remote/lemonade_server.py stop
+python examples/vscode-remote/lemonade_server.py cleanup
+
+# Run VS Code instances with Lemonade inference (injects kilo.json into each sandbox)
+python examples/vscode-remote/main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
 ```
 
 ## Code Style
@@ -193,6 +212,53 @@ With `--workspace-dir /vs-code-remote`, each user gets a host bind mount:
   where endpoint_path strips `127.0.0.1:` prefix from the endpoint string
 - Example: endpoint `127.0.0.1:51111/proxy/8448` → URL `https://165.245.131.172/51111/proxy/8448/`
 
+### Lemonade Server (Local LLM Inference)
+
+A local Lemonade inference server provides OpenAI-compatible LLM endpoints that VS Code
+extensions (Kilo Code, Continue, Cline) inside sandbox containers can connect to. The
+server runs on the host; sandbox containers reach it via the Docker bridge gateway or
+external IP.
+
+**Key Classes:**
+- **`LemonadeServerManager`**: installs, configures, and manages the Lemonade server lifecycle
+  - `install()` — install via PPA (`ppa:lemonade-team/stable`)
+  - `configure()` — write `/var/lib/lemonade/.cache/lemonade/config.json`
+  - `start()` / `stop()` / `restart()` — systemd service management
+  - `pull_model()` — download model via `lemonade pull`
+  - `load_model()` — load model via HTTP API (`/api/v1/load`)
+  - `generate_kilo_config()` — write `kilo.json` for Kilo Code with auto-detected base URL and API key
+  - `_configure_api_keys()` — generate and persist API keys in systemd override
+
+**Configuration:**
+- Config file: `/var/lib/lemonade/.cache/lemonade/config.json`
+- API keys stored in `/etc/systemd/system/lemonade-server.service.d/override.conf`
+- Default port: `13305`, default host: `0.0.0.0`
+- Default backend: `rocm` (auto-detected by Lemonade; can be overridden with `--llamacpp-backend`)
+
+**API Key Security:**
+| Env Variable | Access Level |
+|---|---|
+| `LEMONADE_API_KEY` | Regular endpoints (`/api/*`, `/v0/*`, `/v1/*`) |
+| `LEMONADE_ADMIN_API_KEY` | All endpoints including `/internal/*` |
+
+When both are set, either key is accepted for regular endpoints; admin key is required for internal.
+
+**Kilo Code Integration:**
+1. `lemonade_server.py run --generate-keys` generates API keys and writes `kilo.json`
+2. `kilo.json` contains: provider name (`lemonade`), base URL (auto-detected), API key, model ID
+3. Base URL resolution order: `--external-ip` > Docker bridge gateway > `localhost`
+4. `main.py --lemonade kilo.json` injects the config into each sandbox at `/workspace/.kilo/kilo.json`
+5. Kilo Code extension in the sandbox reads the config and connects to the Lemonade server
+
+**Full Workflow:**
+```bash
+# Terminal 1: Start Lemonade server (generates kilo.json)
+python lemonade_server.py run --model Gemma-3-4b-it-GGUF --generate-keys --external-ip 1.2.3.4
+
+# Terminal 2: Start VS Code sandboxes with Lemonade inference
+python main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
+```
+
 ## Guardrails
 
 ### Must Always
@@ -242,17 +308,22 @@ extensions making cross-site requests to github.com — cannot be fixed server-s
 - `SANDBOX_API_KEY` — optional API key
 - `SANDBOX_IMAGE` — Docker image (default: `opensandbox/vscode:latest`)
 - `PYTHON_VERSION` — Python version in sandbox (default: `3.11`)
+- `LEMONADE_API_KEY` — Lemonade server API key for regular endpoints
+- `LEMONADE_ADMIN_API_KEY` — Lemonade server admin key (elevated access)
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point; argparse CLI; groups loading; instance orchestration; persistent workspaces |
+| `main.py` | Entry point; argparse CLI; groups loading; instance orchestration; persistent workspaces; Lemonade kilo.json injection |
 | `groups.yaml` | Groups and users configuration |
 | `setup.sh` | One-time install: python3, nginx, docker.io, mkcert, openssl |
 | `nginx_config.py` | `NginxConfigGenerator`; per-port individual configs in sites-available |
 | `ssl_cert.py` | `SSLCertificateGenerator`; mkcert primary with openssl fallback |
 | `generate-certs.py` | Legacy mkcert helper (preserved for local dev) |
+| `lemonade_server.py` | `LemonadeServerManager`; install, configure, start/stop, pull/load models, generate kilo.json |
+| `setup-lemonade.sh` | One-time Lemonade server installation via PPA |
+| `kilo.json` | Kilo Code config template for Lemonade OpenAI-compatible provider |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
 | `template.portnumber.available.md` | Nginx template reference showing port-based location blocks |
 | `../vscode/main.py` | Reference template: single-instance, minimal |

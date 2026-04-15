@@ -275,5 +275,8 @@ kubernetes/test/kind/gvisor/containerd-shim-runsc-v1
 bin/
 obj/
 
-.kilo
-.github
+.kilo/
+.github/*
+.ruff_cache/
+
+*.log

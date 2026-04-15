@@ -387,6 +387,78 @@ class LemonadeServerManager:
             return config.get("port", DEFAULT_PORT)
         return DEFAULT_PORT
 
+    def generate_kilo_config(
+        self,
+        model: str = DEFAULT_MODEL,
+        external_ip: Optional[str] = None,
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """Generate a kilo.json config for Kilo Code pointing at this Lemonade server.
+
+        The base URL is resolved to the best reachable address from inside
+        sandbox containers: external_ip > Docker bridge gateway > localhost.
+
+        Args:
+            model: Model ID to configure in Kilo Code.
+            external_ip: External IP for sandbox access.
+            output_path: Path to write kilo.json. Defaults to ./kilo.json.
+
+        Returns:
+            Path to the generated kilo.json file.
+        """
+        port = self.get_port()
+        docker_ip = detect_docker_host_ip()
+
+        if external_ip:
+            base_host = external_ip
+        elif docker_ip:
+            base_host = docker_ip
+        else:
+            base_host = "localhost"
+
+        base_url = f"http://{base_host}:{port}/v1"
+        auth_key = self.admin_api_key or self.api_key or "none"
+
+        model_id = model.lower().replace("-", "-").replace(".", "-")
+        config: dict = {
+            "provider": {
+                "lemonade": {
+                    "models": {
+                        model_id: {
+                            "name": model,
+                            "limit": {
+                                "context": self._get_ctx_size(),
+                                "output": 4096,
+                            },
+                        },
+                    },
+                    "options": {
+                        "apiKey": auth_key,
+                        "baseURL": base_url,
+                    },
+                },
+            },
+            "model": f"lemonade/{model_id}",
+        }
+
+        target = output_path or Path("kilo.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(config, indent=2))
+
+        print(f"[Lemonade] Kilo Code config written to {target}")
+        print(f"[Lemonade]   Provider:  lemonade")
+        print(f"[Lemonade]   Base URL:  {base_url}")
+        print(f"[Lemonade]   Model:     lemonade/{model_id}")
+        if auth_key != "none":
+            print(f"[Lemonade]   API Key:   {auth_key}")
+        return target
+
+    def _get_ctx_size(self) -> int:
+        config = _sudo_read_json(self.config_path)
+        if config:
+            return config.get("ctx_size", 4096)
+        return 4096
+
     def cleanup(self) -> None:
         self.stop()
         print("[Lemonade] Cleanup complete")
@@ -440,6 +512,7 @@ async def cmd_run(
     external_ip: Optional[str] = None,
     api_key: Optional[str] = None,
     admin_api_key: Optional[str] = None,
+    kilo_config: Optional[str] = None,
 ) -> None:
     manager = LemonadeServerManager(
         api_key=api_key,
@@ -473,6 +546,14 @@ async def cmd_run(
     manager.load_model(model)
 
     _print_endpoint_info(manager, model, port, external_ip)
+
+    if generate_keys or kilo_config:
+        output = Path(kilo_config) if kilo_config else Path("kilo.json")
+        manager.generate_kilo_config(
+            model=model,
+            external_ip=external_ip,
+            output_path=output,
+        )
 
     print("Keeping server alive. Press Ctrl+C to exit.")
 
@@ -560,6 +641,24 @@ Examples:
         default=None,
         help="Set a specific admin API key (overrides generate)",
     )
+    config_parser.add_argument(
+        "--kilo-config",
+        type=str,
+        default=None,
+        help="Generate kilo.json for Kilo Code at this path (requires --generate-keys or --api-key)",
+    )
+    config_parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"Model ID for kilo.json (default: {DEFAULT_MODEL})",
+    )
+    config_parser.add_argument(
+        "--external-ip",
+        type=str,
+        default=None,
+        help="External IP for kilo.json base URL (auto-detect Docker gateway if omitted)",
+    )
 
     subparsers.add_parser("start", help="Start the server")
     subparsers.add_parser("stop", help="Stop the server")
@@ -632,6 +731,12 @@ Examples:
         default=None,
         help="External IP for sandbox access URLs (auto-detect Docker gateway if omitted)",
     )
+    run_parser.add_argument(
+        "--kilo-config",
+        type=str,
+        default=None,
+        help="Generate kilo.json for Kilo Code at this path (default: ./kilo.json when --generate-keys is set)",
+    )
 
     subparsers.add_parser("cleanup", help="Stop server and clean up")
 
@@ -657,8 +762,14 @@ Examples:
             max_loaded_models=args.max_loaded_models,
             generate_keys=args.generate_keys,
         )
-        if not args.generate_keys:
-            print("[Lemonade] Use --generate-keys to set up API authentication")
+        if args.kilo_config and (manager.api_key or manager.admin_api_key):
+            manager.generate_kilo_config(
+                model=args.model,
+                external_ip=args.external_ip,
+                output_path=Path(args.kilo_config) if args.kilo_config else None,
+            )
+        elif args.kilo_config:
+            print("[Lemonade] Warning: --kilo-config requires --generate-keys or --api-key to set authentication")
     elif args.command == "start":
         manager.start()
     elif args.command == "stop":
@@ -683,6 +794,7 @@ Examples:
                 external_ip=args.external_ip,
                 api_key=args.api_key,
                 admin_api_key=args.admin_api_key,
+                kilo_config=args.kilo_config,
             )
         )
     elif args.command == "cleanup":
