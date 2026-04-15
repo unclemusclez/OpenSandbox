@@ -53,16 +53,17 @@ RUN useradd -m -s /bin/bash vscode \
 # Set working directory
 WORKDIR /workspace
 
+# Switch to non-root user before installing extensions
+# so they land in /home/vscode/.local/share/code-server/extensions/
+USER vscode
+
 # Install VS Code extensions from extensions.txt
-COPY extensions.txt /tmp/extensions.txt
+COPY --chown=vscode:vscode extensions.txt /tmp/extensions.txt
 RUN while IFS= read -r ext; do \
       [ -z "$ext" ] && continue; \
       code-server --install-extension "$ext" || echo "WARNING: Failed to install $ext"; \
     done < /tmp/extensions.txt \
     && rm /tmp/extensions.txt
-
-# Switch to non-root user
-USER vscode
 
 # Default command (HTTP mode by default)
 # For HTTPS mode, mount certificates and run:

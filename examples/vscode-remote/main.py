@@ -166,6 +166,12 @@ async def _inject_kilo_config(
         print(f"[{user.label}] Warning: kilo.json not found at {config_path}, skipping")
         return
 
+    if "PLACEHOLDER" in config_content:
+        print(
+            f"[{user.label}] Warning: kilo.json contains PLACEHOLDER — "
+            f"run setup-lemonade.sh --generate-keys to generate real API keys"
+        )
+
     kilo_dir = "/workspace/.kilo"
     await sandbox.commands.run(f"mkdir -p {kilo_dir}")
     escaped = config_content.replace("'", "'\\''")
