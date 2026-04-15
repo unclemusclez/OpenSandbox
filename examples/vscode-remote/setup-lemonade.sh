@@ -133,8 +133,34 @@ sudo apt-get update
 sudo apt-get install -y lemonade-server
 sudo update-pciids 2>/dev/null || true
 
+echo "[Lemonade] Stopping server for direct config..."
+sudo systemctl stop lemonade-server 2>/dev/null || true
+
 echo "[Lemonade] Configuring server..."
-lemonade config set port="${PORT}" host="${HOST}" llamacpp.backend="${BACKEND}" ctx_size="${CTX_SIZE}"
+CONFIG_TMP="$(mktemp)"
+if sudo test -f "${CONFIG_DIR}/config.json"; then
+    sudo cat "${CONFIG_DIR}/config.json" > "${CONFIG_TMP}"
+else
+    echo '{}' > "${CONFIG_TMP}"
+fi
+python3 <<'PYEOF' "${CONFIG_TMP}" "${PORT}" "${HOST}" "${BACKEND}" "${CTX_SIZE}"
+import json, sys
+path, port, host, backend, ctx_size = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5])
+with open(path) as f:
+    existing = json.load(f)
+existing.update({
+    "port": port,
+    "host": host,
+    "ctx_size": ctx_size,
+})
+llamacpp = existing.setdefault("llamacpp", {})
+llamacpp["backend"] = backend
+with open(path, "w") as f:
+    json.dump(existing, f, indent=2)
+PYEOF
+sudo cp "${CONFIG_TMP}" "${CONFIG_DIR}/config.json"
+rm -f "${CONFIG_TMP}"
+echo "[Lemonade] Configuration written to ${CONFIG_DIR}/config.json"
 
 echo "[Lemonade] Writing user_models.json..."
 sudo mkdir -p "${CONFIG_DIR}"
