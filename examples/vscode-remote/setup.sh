@@ -37,10 +37,6 @@ sudo apt-get install -y --no-install-recommends \
     curl \
     libnss3-tools
 
-
-sudo usermod -aG docker $USER # Add your user to the docker group
-newgrp docker # Apply group changes without logging out
-
 echo "[Setup] Creating SSL directory at ${SSL_DIR}..."
 sudo mkdir -p "${SSL_DIR}"
 sudo chown -R "$(whoami)":"$(whoami)" "${SSL_DIR}" 2>/dev/null || true
@@ -93,3 +89,7 @@ if [ -n "$CAROOT" ]; then
     echo "[Setup] For client browsers: install the mkcert CA root from:"
     echo "  ${CAROOT}/rootCA.pem"
 fi
+
+sudo usermod -aG docker $USER # Add your user to the docker group
+newgrp docker # Apply group changes without logging out
+. ~/.venv/bin/activate
