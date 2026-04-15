@@ -60,6 +60,7 @@ USER vscode
 # Install VS Code extensions from extensions.txt
 COPY --chown=vscode:vscode examples/vscode-remote/extensions.txt /tmp/extensions.txt
 RUN while IFS= read -r ext; do \
+      ext="$(echo "$ext" | tr -d '\r')"; \
       [ -z "$ext" ] && continue; \
       code-server --install-extension "$ext" || echo "WARNING: Failed to install $ext"; \
     done < /tmp/extensions.txt \
