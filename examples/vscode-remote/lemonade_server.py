@@ -137,6 +137,7 @@ def _sudo_write_json(path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
     except PermissionError:
+        _run_cmd(["mkdir", "-p", str(path.parent)], sudo=True)
         tmp_path = Path(f"/tmp/{path.name}")
         tmp_path.write_text(content)
         _run_cmd(["cp", str(tmp_path), str(path)], sudo=True)
