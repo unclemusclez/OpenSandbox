@@ -71,7 +71,7 @@ SYSTEMD_OVERRIDE_DIR = Path(
     f"/etc/systemd/system/{SYSTEMD_SERVICE_NAME}.service.d"
 )
 DEFAULT_MODEL = "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL"
-DEFAULT_MODEL_NAME = "gemma-4-31B-it-GGUF-Q8_K_XL"
+DEFAULT_MODEL_NAME = "gemma-4-31b-it"
 DEFAULT_PORT = 13305
 DEFAULT_HOST = "0.0.0.0"
 PER_USER_CTX = 262144
@@ -516,11 +516,12 @@ class LemonadeServerManager:
         base_url = f"http://{base_host}:{port}/v1"
         auth_key = self.admin_api_key or self.api_key or "none"
 
+        prefixed_model_name = f"user.{model_name}"
         config: dict = {
             "provider": {
                 "lemonade": {
                     "models": {
-                        model_name: {
+                        prefixed_model_name: {
                             "name": model,
                             "limit": {
                                 "context": self._get_ctx_size(),
@@ -534,7 +535,7 @@ class LemonadeServerManager:
                     },
                 },
             },
-            "model": f"lemonade/{model_name}",
+            "model": f"lemonade/{prefixed_model_name}",
         }
 
         target = output_path or Path("kilo.json")
@@ -544,7 +545,7 @@ class LemonadeServerManager:
         print(f"[Lemonade] Kilo Code config written to {target}")
         print(f"[Lemonade]   Provider:  lemonade")
         print(f"[Lemonade]   Base URL:  {base_url}")
-        print(f"[Lemonade]   Model:     lemonade/{model_name}")
+        print(f"[Lemonade]   Model:     lemonade/{prefixed_model_name}")
         if auth_key != "none":
             print(f"[Lemonade]   API Key:   {auth_key}")
         return target

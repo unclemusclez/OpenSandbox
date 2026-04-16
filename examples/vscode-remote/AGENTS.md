@@ -246,7 +246,7 @@ lemonade pull <model>
 
 **Default Model:**
 - Checkpoint: `unsloth/gemma-4-31B-it-GGUF:Q8_K_XL`
-- Short name: `gemma-4-31B-it-GGUF-Q8_K_XL` (registered as `user.gemma-4-31B-it-GGUF-Q8_K_XL`)
+- Short name: `gemma-4-31b-it` (registered as `user.gemma-4-31b-it`; the `user.` prefix is required in API requests)
 - Recipe: `llamacpp` with ROCm backend
 
 **Per-User Scaling:**
@@ -270,7 +270,7 @@ Full llama.cpp args:
 **user_models.json example:**
 ```json
 {
-    "gemma-4-31B-it-GGUF-Q8_K_XL": {
+    "gemma-4-31b-it": {
         "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL",
         "recipe": "llamacpp",
         "size": 31.0
@@ -281,7 +281,7 @@ Full llama.cpp args:
 **recipe_options.json example (4 users):**
 ```json
 {
-    "user.gemma-4-31B-it-GGUF-Q8_K_XL": {
+    "user.gemma-4-31b-it": {
         "ctx_size": 262144,
         "llamacpp_backend": "rocm",
         "llamacpp_args": "-ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja --ctx-size 1048576 --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1 -np 4"
@@ -299,7 +299,7 @@ When both are set, either key is accepted for regular endpoints; admin key is re
 
 **Kilo Code Integration:**
 1. `setup-lemonade.sh --groups groups.yaml --generate-keys` generates API keys and writes `kilo.json`
-2. `kilo.json` contains: provider name (`lemonade`), base URL (auto-detected), API key, model ID (`gemma-4-31B-it-GGUF-Q8_K_XL`)
+2. `kilo.json` contains: provider name (`lemonade`), base URL (auto-detected), API key, model ID (`user.gemma-4-31b-it`)
 3. Base URL resolution order: `--external-ip` > Docker bridge gateway > `localhost`
 4. `main.py --lemonade kilo.json` injects the config into each sandbox at `/workspace/.kilo/kilo.json`
 5. Kilo Code extension in the sandbox reads the config and connects to the Lemonade server
