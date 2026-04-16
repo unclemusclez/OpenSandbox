@@ -79,7 +79,7 @@ PER_USER_CTX = 262144
 LLAMACPP_DEFAULTS: dict = {
     "backend": "auto",
     "args": "",
-    "prefer_system": False,
+    "prefer_system": True,
     "rocm_bin": "builtin",
     "vulkan_bin": "builtin",
     "cpu_bin": "builtin",
@@ -288,6 +288,7 @@ class LemonadeServerManager:
                 **LLAMACPP_DEFAULTS,
                 **existing.get("llamacpp", {}),
                 "backend": llamacpp_backend,
+                "prefer_system": True,
             },
             "whispercpp": {
                 **WHISPERCPP_DEFAULTS,

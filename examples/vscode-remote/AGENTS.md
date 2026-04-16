@@ -377,6 +377,7 @@ extensions making cross-site requests to github.com — cannot be fixed server-s
 | `generate-certs.py` | Legacy mkcert helper (preserved for local dev) |
 | `lemonade_server.py` | `LemonadeServerManager`; Python wrapper for install, configure, start/stop, pull/load models, generate kilo.json |
 | `setup-lemonade.sh` | All-in-one shell script: install, configure, generate API keys, pull model, generate kilo.json (recommended) |
+| `build-amd-mi300x-llama-server.sh` | Build llama.cpp from source for AMD MI300X (gfx942) with ROCm; installed to `/usr/local` |
 | `kilo.json` | Kilo Code config template for Lemonade OpenAI-compatible provider |
 | `vscode-settings.jsonc` | VS Code settings template injected into each sandbox's code-server |
 | `Dockerfile` | Sandbox image: python:3.12-slim + code-server + non-root vscode user |
