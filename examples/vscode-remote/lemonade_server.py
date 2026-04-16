@@ -71,7 +71,7 @@ SYSTEMD_OVERRIDE_DIR = Path(
     f"/etc/systemd/system/{SYSTEMD_SERVICE_NAME}.service.d"
 )
 DEFAULT_MODEL = "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL"
-DEFAULT_MODEL_NAME = "gemma-4-31b-it"
+DEFAULT_MODEL_NAME = "gemma-4-31B-it-GGUF-Q8_K_XL"
 DEFAULT_PORT = 13305
 DEFAULT_HOST = "0.0.0.0"
 PER_USER_CTX = 262144
