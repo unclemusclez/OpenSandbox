@@ -30,6 +30,7 @@ KILO_CONFIG_OUTPUT="${LEMONADE_KILO_CONFIG:-${SCRIPT_DIR}/kilo.json}"
 GROUPS_FILE=""
 GROUP_FILTER=""
 NUM_USERS="${LEMONADE_NUM_USERS:-1}"
+PREFER_SYSTEM="${LEMONADE_PREFER_SYSTEM:-true}"
 PER_USER_CTX=262144
 CONFIG_DIR="/var/lib/lemonade/.cache/lemonade"
 
@@ -56,13 +57,15 @@ Options:
   --model-name NAME     Short model name for user_models.json (default: ${MODEL_NAME})
   --external-ip IP      External IP for kilo.json base URL
   --generate-keys       Generate API key and admin key in systemd override
+  --no-prefer-system    Use bundled llama.cpp instead of system-installed
   --kilo-config PATH    Output path for kilo.json (default: ${KILO_CONFIG_OUTPUT})
   -h, --help            Show this help
 
 Environment variables (override defaults):
   LEMONADE_PORT, LEMONADE_HOST, LEMONADE_BACKEND, LEMONADE_CTX_SIZE,
   LEMONADE_MODEL, LEMONADE_MODEL_NAME, LEMONADE_EXTERNAL_IP,
-  LEMONADE_GENERATE_KEYS, LEMONADE_NUM_USERS, LEMONADE_KILO_CONFIG
+  LEMONADE_GENERATE_KEYS, LEMONADE_NUM_USERS, LEMONADE_KILO_CONFIG,
+  LEMONADE_PREFER_SYSTEM
 
 Examples:
   # Full setup with groups.yaml for user count
@@ -89,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         --model-name)    MODEL_NAME="$2"; shift 2 ;;
         --external-ip)   EXTERNAL_IP="$2"; shift 2 ;;
         --generate-keys) GENERATE_KEYS="true"; shift ;;
+        --no-prefer-system) PREFER_SYSTEM="false"; shift ;;
         --kilo-config)   KILO_CONFIG_OUTPUT="$2"; shift 2 ;;
         -h|--help)       usage; exit 0 ;;
         *)               echo "Unknown option: $1"; usage; exit 1 ;;
@@ -124,11 +128,18 @@ echo "[Lemonade] Stopping server for direct config..."
 sudo systemctl stop lemonade-server 2>/dev/null || true
 
 echo "[Lemonade] Configuring server..."
+PREFER_SYSTEM_FLAG=""
+if [[ "${PREFER_SYSTEM}" == "true" ]]; then
+    PREFER_SYSTEM_FLAG="--prefer-system"
+else
+    PREFER_SYSTEM_FLAG="--no-prefer-system"
+fi
 python3 "${LEMONADE_PY}" configure \
     --port "${PORT}" \
     --host "${HOST}" \
     --llamacpp-backend "${BACKEND}" \
-    --ctx-size "${CTX_SIZE}"
+    --ctx-size "${CTX_SIZE}" \
+    ${PREFER_SYSTEM_FLAG}
 
 echo "[Lemonade] Writing model configs (user_models.json + recipe_options.json)..."
 python3 "${LEMONADE_PY}" write-model-configs \

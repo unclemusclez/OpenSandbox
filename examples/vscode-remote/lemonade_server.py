@@ -264,6 +264,7 @@ class LemonadeServerManager:
         ctx_size: int = 4096,
         max_loaded_models: int = 1,
         generate_keys: bool = False,
+        prefer_system: bool = True,
     ) -> None:
         """Write config.json and optionally set API keys in systemd override."""
         existing = _sudo_read_json(self.config_path) or {}
@@ -288,7 +289,7 @@ class LemonadeServerManager:
                 **LLAMACPP_DEFAULTS,
                 **existing.get("llamacpp", {}),
                 "backend": llamacpp_backend,
-                "prefer_system": True,
+                "prefer_system": prefer_system,
             },
             "whispercpp": {
                 **WHISPERCPP_DEFAULTS,
@@ -615,6 +616,7 @@ async def cmd_run(
     api_key: Optional[str] = None,
     admin_api_key: Optional[str] = None,
     kilo_config: Optional[str] = None,
+    prefer_system: bool = True,
 ) -> None:
     if groups_file:
         num_users = load_user_count(groups_file, group_filter)
@@ -647,6 +649,7 @@ async def cmd_run(
         ctx_size=PER_USER_CTX,
         max_loaded_models=max_loaded_models,
         generate_keys=generate_keys,
+        prefer_system=prefer_system,
     )
 
     manager.restart()
@@ -736,6 +739,18 @@ Examples:
         type=str,
         default="rocm",
         help="llama.cpp backend: auto, rocm, vulkan, cpu (default: rocm)",
+    )
+    config_parser.add_argument(
+        "--prefer-system",
+        action="store_true",
+        default=True,
+        help="Prefer system-installed llama.cpp over bundled (default: True)",
+    )
+    config_parser.add_argument(
+        "--no-prefer-system",
+        action="store_false",
+        dest="prefer_system",
+        help="Use bundled llama.cpp instead of system-installed",
     )
     config_parser.add_argument(
         "--ctx-size", type=int, default=4096, help="Default context size (default: 4096)"
@@ -838,6 +853,18 @@ Examples:
         type=str,
         default="rocm",
         help="llama.cpp backend: auto, rocm, vulkan, cpu (default: rocm)",
+    )
+    run_parser.add_argument(
+        "--prefer-system",
+        action="store_true",
+        default=True,
+        help="Prefer system-installed llama.cpp over bundled (default: True)",
+    )
+    run_parser.add_argument(
+        "--no-prefer-system",
+        action="store_false",
+        dest="prefer_system",
+        help="Use bundled llama.cpp instead of system-installed",
     )
     run_parser.add_argument(
         "--ctx-size", type=int, default=4096, help="Default context size (default: 4096)"
@@ -992,6 +1019,7 @@ Examples:
             ctx_size=args.ctx_size,
             max_loaded_models=args.max_loaded_models,
             generate_keys=args.generate_keys,
+            prefer_system=args.prefer_system,
         )
         if args.kilo_config and (manager.api_key or manager.admin_api_key):
             manager.generate_kilo_config(
@@ -1031,6 +1059,7 @@ Examples:
                 api_key=args.api_key,
                 admin_api_key=args.admin_api_key,
                 kilo_config=args.kilo_config,
+                prefer_system=args.prefer_system,
             )
         )
     elif args.command == "count-users":
