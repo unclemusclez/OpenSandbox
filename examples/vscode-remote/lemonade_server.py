@@ -72,6 +72,7 @@ SYSTEMD_OVERRIDE_DIR = Path(
 )
 DEFAULT_MODEL = "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL"
 DEFAULT_MODEL_NAME = "gemma-4-31b-it"
+DEFAULT_MMPROJ = "mmproj-BF16.gguf"
 DEFAULT_PORT = 13305
 DEFAULT_HOST = "0.0.0.0"
 PER_USER_CTX = 262144
@@ -443,6 +444,7 @@ class LemonadeServerManager:
         model_name: str = DEFAULT_MODEL_NAME,
         num_users: int = 1,
         llamacpp_backend: str = "auto",
+        mmproj: Optional[str] = None,
     ) -> None:
         """Write user_models.json and recipe_options.json for a custom model.
 
@@ -451,6 +453,7 @@ class LemonadeServerManager:
             model_name: Short model name for user_models.json key (no user. prefix).
             num_users: Number of parallel users; scales ctx-size and -np.
             llamacpp_backend: llama.cpp backend (auto, rocm, vulkan, cpu).
+            mmproj: Multimodal projection model filename (e.g. "mmproj-BF16.gguf").
         """
         user_models_path = self.config_dir / "user_models.json"
         recipe_options_path = self.config_dir / "recipe_options.json"
@@ -459,15 +462,23 @@ class LemonadeServerManager:
 
         auto_name = model.split("/")[-1].split(":")[0]
         auto_name_key = auto_name
+
         if auto_name_key in existing_models and auto_name_key != model_name:
+            auto_entry = existing_models[auto_name_key]
+            if not mmproj and "mmproj" in auto_entry:
+                mmproj = auto_entry["mmproj"]
+                print(f"[Lemonade] Inherited mmproj from auto-generated entry: {mmproj}")
             del existing_models[auto_name_key]
             print(f"[Lemonade] Removed auto-generated entry: {auto_name_key}")
 
-        existing_models[model_name] = {
+        model_entry: dict = {
             "checkpoint": model,
             "recipe": "llamacpp",
             "size": 31.0,
         }
+        if mmproj:
+            model_entry["mmproj"] = mmproj
+        existing_models[model_name] = model_entry
         _sudo_write_json(user_models_path, existing_models)
         print(f"[Lemonade] user_models.json updated with {model_name}")
 
@@ -628,6 +639,7 @@ async def cmd_run(
     llamacpp_backend: str = "auto",
     ctx_size: int = 4096,
     max_loaded_models: int = 1,
+    mmproj: Optional[str] = DEFAULT_MMPROJ,
     groups_file: Optional[str] = None,
     group_filter: Optional[str] = None,
     num_users: int = 1,
@@ -662,6 +674,7 @@ async def cmd_run(
         model_name=model_name,
         num_users=num_users,
         llamacpp_backend=llamacpp_backend,
+        mmproj=mmproj,
     )
 
     manager.configure(
@@ -932,6 +945,12 @@ Examples:
         help="Skip installation check (server already installed)",
     )
     run_parser.add_argument(
+        "--mmproj",
+        type=str,
+        default=DEFAULT_MMPROJ,
+        help=f"Multimodal projection model filename (default: {DEFAULT_MMPROJ})",
+    )
+    run_parser.add_argument(
         "--external-ip",
         type=str,
         default=None,
@@ -988,6 +1007,12 @@ Examples:
         type=str,
         default="auto",
         help="llama.cpp backend (default: auto)",
+    )
+    write_model_configs_parser.add_argument(
+        "--mmproj",
+        type=str,
+        default=DEFAULT_MMPROJ,
+        help=f"Multimodal projection model filename (default: {DEFAULT_MMPROJ})",
     )
 
     generate_kilo_parser = subparsers.add_parser(
@@ -1097,6 +1122,7 @@ Examples:
                 kilo_config=args.kilo_config,
                 prefer_system=args.prefer_system,
                 llamacpp_bin=args.llamacpp_bin,
+                mmproj=args.mmproj,
             )
         )
     elif args.command == "count-users":
@@ -1108,6 +1134,7 @@ Examples:
             model_name=args.model_name,
             num_users=args.num_users,
             llamacpp_backend=args.llamacpp_backend,
+            mmproj=args.mmproj,
         )
     elif args.command == "generate-kilo-config":
         mgr = LemonadeServerManager(

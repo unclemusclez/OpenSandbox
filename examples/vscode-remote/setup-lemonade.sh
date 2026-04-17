@@ -24,6 +24,7 @@ BACKEND="${LEMONADE_BACKEND:-auto}"
 CTX_SIZE="${LEMONADE_CTX_SIZE:-262144}"
 MODEL="${LEMONADE_MODEL:-unsloth/gemma-4-31B-it-GGUF:Q8_K_XL}"
 MODEL_NAME="${LEMONADE_MODEL_NAME:-gemma-4-31b-it}"
+MMPROJ="${LEMONADE_MMPROJ:-mmproj-BF16.gguf}"
 EXTERNAL_IP="${LEMONADE_EXTERNAL_IP:-}"
 GENERATE_KEYS="${LEMONADE_GENERATE_KEYS:-false}"
 KILO_CONFIG_OUTPUT="${LEMONADE_KILO_CONFIG:-${SCRIPT_DIR}/kilo.json}"
@@ -56,6 +57,7 @@ Options:
   --ctx-size SIZE       Per-user context size (default: ${CTX_SIZE})
   --model MODEL         HuggingFace checkpoint (default: ${MODEL})
   --model-name NAME     Short model name for user_models.json (default: ${MODEL_NAME})
+  --mmproj FILE         Multimodal projection model filename (default: ${MMPROJ})
   --external-ip IP      External IP for kilo.json base URL
   --generate-keys       Generate API key and admin key in systemd override
   --no-prefer-system    Use bundled llama.cpp instead of system-installed
@@ -67,7 +69,7 @@ Environment variables (override defaults):
   LEMONADE_PORT, LEMONADE_HOST, LEMONADE_BACKEND, LEMONADE_CTX_SIZE,
   LEMONADE_MODEL, LEMONADE_MODEL_NAME, LEMONADE_EXTERNAL_IP,
   LEMONADE_GENERATE_KEYS, LEMONADE_NUM_USERS, LEMONADE_KILO_CONFIG,
-  LEMONADE_PREFER_SYSTEM, LEMONADE_LLMACPP_BIN
+  LEMONADE_PREFER_SYSTEM, LEMONADE_LLMACPP_BIN, LEMONADE_MMPROJ
 
 Examples:
   # Full setup with groups.yaml for user count
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         --ctx-size)      CTX_SIZE="$2"; shift 2 ;;
         --model)         MODEL="$2"; shift 2 ;;
         --model-name)    MODEL_NAME="$2"; shift 2 ;;
+        --mmproj)        MMPROJ="$2"; shift 2 ;;
         --external-ip)   EXTERNAL_IP="$2"; shift 2 ;;
         --generate-keys) GENERATE_KEYS="true"; shift ;;
         --no-prefer-system) PREFER_SYSTEM="false"; shift ;;
@@ -150,7 +153,8 @@ python3 "${LEMONADE_PY}" write-model-configs \
     --model "${MODEL}" \
     --model-name "${MODEL_NAME}" \
     --num-users "${NUM_USERS}" \
-    --llamacpp-backend "${BACKEND}"
+    --llamacpp-backend "${BACKEND}" \
+    --mmproj "${MMPROJ}"
 LEMONADE_USER="$(systemctl show lemonade-server -p User --value 2>/dev/null || echo lemonade)"
 sudo chown -R "${LEMONADE_USER}:${LEMONADE_USER}" "${CONFIG_DIR}"
 
