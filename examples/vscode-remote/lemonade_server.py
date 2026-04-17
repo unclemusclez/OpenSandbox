@@ -411,13 +411,36 @@ class LemonadeServerManager:
         print(f"[Lemonade] Model pull completed: {model}")
 
     def _is_model_downloaded(self, model: str) -> bool:
-        """Check if a model is already downloaded by reading user_models.json."""
+        """Check if a model is already downloaded by checking the HF cache."""
         bare_name = model.removeprefix("user.")
         models = _sudo_read_json(self.config_dir / "user_models.json") or {}
-        entry = models.get(bare_name)
-        if not entry:
+        entry = models.get(bare_name, {})
+        checkpoint = entry.get("checkpoint", "")
+        if not checkpoint:
             return False
-        return entry.get("downloaded", 0) == 1 or entry.get("downloaded") is True
+        repo_id = checkpoint.split(":")[0]
+        model_dir_name = "models--" + repo_id.replace("/", "--")
+
+        cache_roots = [
+            Path("/var/lib/lemonade/.cache/huggingface"),
+            Path(os.getenv(
+                "HF_HOME",
+                os.getenv("HF_HUB_CACHE", str(Path.home() / ".cache" / "huggingface")),
+            )),
+        ]
+
+        for cache_root in cache_roots:
+            hub_dir = cache_root / "hub"
+            if not hub_dir.exists():
+                continue
+            model_cache = hub_dir / model_dir_name
+            if model_cache.exists():
+                snapshots = model_cache / "snapshots"
+                if snapshots.exists():
+                    for snap in snapshots.iterdir():
+                        if snap.is_dir() and any(snap.glob("*.gguf")):
+                            return True
+        return False
 
     def load_model(self, model: str, timeout: int = 120) -> bool:
         """Load a model via the Lemonade HTTP API so it is ready for inference."""
