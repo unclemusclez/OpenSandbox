@@ -49,6 +49,7 @@ Usage:
 """
 
 import argparse
+import base64
 import asyncio
 import os
 import secrets
@@ -174,8 +175,8 @@ async def _inject_kilo_config(
 
     kilo_dir = "/home/vscode/.config/kilo"
     await sandbox.commands.run(f"mkdir -p {kilo_dir}")
-    escaped = config_content.replace("'", "'\\''")
-    write_cmd = f"echo '{escaped}' > {kilo_dir}/config.json"
+    encoded = base64.b64encode(config_content.encode()).decode()
+    write_cmd = f"echo {encoded} | base64 -d > {kilo_dir}/config.json"
     await sandbox.commands.run(write_cmd)
     print(f"[{user.label}] Injected kilo config -> {kilo_dir}/config.json")
 
@@ -192,8 +193,8 @@ async def _inject_vscode_settings(
 
     settings_dir = "/home/vscode/.local/share/code-server/User"
     await sandbox.commands.run(f"mkdir -p {settings_dir}")
-    escaped = settings_content.replace("'", "'\\''")
-    write_cmd = f"echo '{escaped}' > {settings_dir}/settings.json"
+    encoded = base64.b64encode(settings_content.encode()).decode()
+    write_cmd = f"echo {encoded} | base64 -d > {settings_dir}/settings.json"
     await sandbox.commands.run(write_cmd)
     print(f"[{user.label}] Injected VS Code settings -> {settings_dir}/settings.json")
 

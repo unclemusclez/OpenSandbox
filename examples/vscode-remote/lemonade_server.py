@@ -76,13 +76,15 @@ DEFAULT_PORT = 13305
 DEFAULT_HOST = "0.0.0.0"
 PER_USER_CTX = 262144
 
+DEFAULT_LLMACPP_BIN = "/usr/local/bin/llama-server"
+
 LLAMACPP_DEFAULTS: dict = {
     "backend": "auto",
     "args": "",
     "prefer_system": True,
-    "rocm_bin": "builtin",
-    "vulkan_bin": "builtin",
-    "cpu_bin": "builtin",
+    "rocm_bin": DEFAULT_LLMACPP_BIN,
+    "vulkan_bin": DEFAULT_LLMACPP_BIN,
+    "cpu_bin": DEFAULT_LLMACPP_BIN,
 }
 WHISPERCPP_DEFAULTS: dict = {
     "backend": "auto",
@@ -265,6 +267,7 @@ class LemonadeServerManager:
         max_loaded_models: int = 1,
         generate_keys: bool = False,
         prefer_system: bool = True,
+        llamacpp_bin: str = DEFAULT_LLMACPP_BIN,
     ) -> None:
         """Write config.json and optionally set API keys in systemd override."""
         existing = _sudo_read_json(self.config_path) or {}
@@ -290,6 +293,9 @@ class LemonadeServerManager:
                 **existing.get("llamacpp", {}),
                 "backend": llamacpp_backend,
                 "prefer_system": prefer_system,
+                "rocm_bin": llamacpp_bin if prefer_system else "builtin",
+                "vulkan_bin": llamacpp_bin if prefer_system else "builtin",
+                "cpu_bin": llamacpp_bin if prefer_system else "builtin",
             },
             "whispercpp": {
                 **WHISPERCPP_DEFAULTS,
@@ -617,6 +623,7 @@ async def cmd_run(
     admin_api_key: Optional[str] = None,
     kilo_config: Optional[str] = None,
     prefer_system: bool = True,
+    llamacpp_bin: str = DEFAULT_LLMACPP_BIN,
 ) -> None:
     if groups_file:
         num_users = load_user_count(groups_file, group_filter)
@@ -650,6 +657,7 @@ async def cmd_run(
         max_loaded_models=max_loaded_models,
         generate_keys=generate_keys,
         prefer_system=prefer_system,
+        llamacpp_bin=llamacpp_bin,
     )
 
     manager.restart()
@@ -751,6 +759,12 @@ Examples:
         action="store_false",
         dest="prefer_system",
         help="Use bundled llama.cpp instead of system-installed",
+    )
+    config_parser.add_argument(
+        "--llamacpp-bin",
+        type=str,
+        default=DEFAULT_LLMACPP_BIN,
+        help=f"Path to system llama-server binary (default: {DEFAULT_LLMACPP_BIN})",
     )
     config_parser.add_argument(
         "--ctx-size", type=int, default=4096, help="Default context size (default: 4096)"
@@ -865,6 +879,12 @@ Examples:
         action="store_false",
         dest="prefer_system",
         help="Use bundled llama.cpp instead of system-installed",
+    )
+    run_parser.add_argument(
+        "--llamacpp-bin",
+        type=str,
+        default=DEFAULT_LLMACPP_BIN,
+        help=f"Path to system llama-server binary (default: {DEFAULT_LLMACPP_BIN})",
     )
     run_parser.add_argument(
         "--ctx-size", type=int, default=4096, help="Default context size (default: 4096)"
@@ -1020,6 +1040,7 @@ Examples:
             max_loaded_models=args.max_loaded_models,
             generate_keys=args.generate_keys,
             prefer_system=args.prefer_system,
+            llamacpp_bin=args.llamacpp_bin,
         )
         if args.kilo_config and (manager.api_key or manager.admin_api_key):
             manager.generate_kilo_config(
@@ -1060,6 +1081,7 @@ Examples:
                 admin_api_key=args.admin_api_key,
                 kilo_config=args.kilo_config,
                 prefer_system=args.prefer_system,
+                llamacpp_bin=args.llamacpp_bin,
             )
         )
     elif args.command == "count-users":
