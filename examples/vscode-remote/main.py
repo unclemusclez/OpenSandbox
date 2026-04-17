@@ -57,6 +57,20 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_path(path_str: str) -> Path:
+    """Resolve a path relative to SCRIPT_DIR if not absolute."""
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    resolved = SCRIPT_DIR / p
+    if resolved.exists():
+        return resolved
+    return p
 from datetime import timedelta
 from typing import Optional
 
@@ -441,9 +455,13 @@ Examples:
     image = args.image or os.getenv("SANDBOX_IMAGE", "opensandbox/vscode-remote:latest")
     python_version = args.python_version or os.getenv("PYTHON_VERSION", "3.11")
 
+    groups_path = resolve_path(args.groups) if args.groups else None
+    lemonade_path = str(resolve_path(args.lemonade)) if args.lemonade else None
+    vscode_settings_path = str(resolve_path(args.vscode_settings)) if args.vscode_settings else None
+
     users: list[UserInfo]
     if args.groups:
-        users = load_groups(args.groups, group_filter=args.group)
+        users = load_groups(str(groups_path), group_filter=args.group)
         if not users:
             print("Error: No users found in groups config")
             sys.exit(1)
