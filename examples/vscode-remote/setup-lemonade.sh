@@ -199,12 +199,6 @@ fi
 eval ${PULL_ENV} lemonade pull "${MODEL}"
 
 echo "[Lemonade] Loading model via API..."
-AUTH_HEADER=""
-if [[ -n "${ADMIN_KEY}" ]]; then
-    AUTH_HEADER="-H \"Authorization: Bearer ${ADMIN_KEY}\""
-elif [[ -n "${API_KEY}" ]]; then
-    AUTH_HEADER="-H \"Authorization: Bearer ${API_KEY}\""
-fi
 
 LOCAL_HOST="localhost"
 if [[ "${HOST}" != "0.0.0.0" ]]; then
@@ -213,9 +207,16 @@ fi
 
 PREFIXED_NAME="user.${MODEL_NAME}"
 
-eval curl -sf -X POST "http://${LOCAL_HOST}:${PORT}/api/v1/load" \
-    -H "Content-Type: application/json" ${AUTH_HEADER} \
-    -d "{\"model\": \"${PREFIXED_NAME}\"}" && echo "[Lemonade] Model loaded: ${PREFIXED_NAME}" || \
+CURL_ARGS=(-sf -X POST "http://${LOCAL_HOST}:${PORT}/api/v1/load"
+    -H "Content-Type: application/json")
+if [[ -n "${ADMIN_KEY}" ]]; then
+    CURL_ARGS+=(-H "Authorization: Bearer ${ADMIN_KEY}")
+elif [[ -n "${API_KEY}" ]]; then
+    CURL_ARGS+=(-H "Authorization: Bearer ${API_KEY}")
+fi
+CURL_ARGS+=(-d "{\"model\": \"${PREFIXED_NAME}\"}")
+
+curl "${CURL_ARGS[@]}" && echo "[Lemonade] Model loaded: ${PREFIXED_NAME}" || \
     echo "[Lemonade] Warning: Model load request failed (model may still be loading)"
 
 echo "[Lemonade] Generating kilo.json at ${KILO_CONFIG_OUTPUT}"
