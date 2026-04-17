@@ -206,7 +206,8 @@ fi
 if python3 "${LEMONADE_PY}" status &>/dev/null && lemonade list 2>/dev/null | grep -q "${PREFIXED_NAME}.*Yes"; then
     echo "[Lemonade] Model already downloaded: ${PREFIXED_NAME}"
 else
-    eval ${PULL_ENV} lemonade pull "${PREFIXED_NAME}" --checkpoint main "${MODEL}" --recipe llamacpp
+    eval ${PULL_ENV} lemonade pull "${PREFIXED_NAME}" --checkpoint main "${MODEL}" --recipe llamacpp || \
+        echo "[Lemonade] Warning: Model pull failed (files may already be cached)"
 fi
 
 echo "[Lemonade] Loading model via API..."

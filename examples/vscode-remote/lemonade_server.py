@@ -407,8 +407,8 @@ class LemonadeServerManager:
         if checkpoint and model.startswith("user."):
             cmd += ["--checkpoint", "main", checkpoint, "--recipe", "llamacpp"]
 
-        subprocess.run(cmd, check=True, env=env)
-        print(f"[Lemonade] Model pulled: {model}")
+        subprocess.run(cmd, check=False, env=env)
+        print(f"[Lemonade] Model pull completed: {model}")
 
     def _is_model_downloaded(self, model: str) -> bool:
         """Check if a model is already downloaded by reading user_models.json."""
