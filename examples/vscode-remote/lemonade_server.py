@@ -378,8 +378,19 @@ class LemonadeServerManager:
             print(f"[Lemonade] Server status: {result.stdout.strip()}")
         return active
 
-    def pull_model(self, model: str) -> None:
-        """Download a model to the local cache via the lemonade CLI."""
+    def pull_model(
+        self,
+        model: str,
+        checkpoint: Optional[str] = None,
+    ) -> None:
+        """Download a model to the local cache via the lemonade CLI.
+
+        Args:
+            model: Model name (e.g. "user.gemma-4-31b-it") or HuggingFace
+                checkpoint (e.g. "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL").
+            checkpoint: HuggingFace checkpoint when pulling a user model by
+                name.  Required when model starts with "user.".
+        """
         print(f"[Lemonade] Pulling model: {model}")
         env = os.environ.copy()
         auth_key = self.admin_api_key or self.api_key
@@ -387,11 +398,12 @@ class LemonadeServerManager:
             env["LEMONADE_API_KEY"] = auth_key
         if self.admin_api_key:
             env["LEMONADE_ADMIN_API_KEY"] = self.admin_api_key
-        subprocess.run(
-            ["lemonade", "pull", model],
-            check=True,
-            env=env,
-        )
+
+        cmd: list[str] = ["lemonade", "pull", model]
+        if checkpoint and model.startswith("user."):
+            cmd += ["--checkpoint", "main", checkpoint, "--recipe", "llamacpp"]
+
+        subprocess.run(cmd, check=True, env=env)
         print(f"[Lemonade] Model pulled: {model}")
 
     def load_model(self, model: str, timeout: int = 120) -> bool:
@@ -711,7 +723,7 @@ async def cmd_run(
         sys.exit(1)
 
     prefixed_model = f"user.{model_name}"
-    manager.pull_model(prefixed_model)
+    manager.pull_model(prefixed_model, checkpoint=model)
 
     await asyncio.sleep(2)
     manager.load_model(prefixed_model)
