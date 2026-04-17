@@ -397,7 +397,9 @@ class LemonadeServerManager:
         """Load a model via the Lemonade HTTP API so it is ready for inference."""
         endpoint = self.get_endpoint()
         url = f"{endpoint}/api/v1/load"
-        payload = json.dumps({"model": model}).encode()
+        payload = json.dumps(
+            {"model": model, "recipe": "llamacpp"}
+        ).encode()
         req = urllib.request.Request(
             url,
             data=payload,

@@ -214,7 +214,7 @@ if [[ -n "${ADMIN_KEY}" ]]; then
 elif [[ -n "${API_KEY}" ]]; then
     CURL_ARGS+=(-H "Authorization: Bearer ${API_KEY}")
 fi
-CURL_ARGS+=(-d "{\"model\": \"${PREFIXED_NAME}\"}")
+CURL_ARGS+=(-d "{\"model\": \"${PREFIXED_NAME}\", \"recipe\": \"llamacpp\"}")
 
 curl "${CURL_ARGS[@]}" && echo "[Lemonade] Model loaded: ${PREFIXED_NAME}" || \
     echo "[Lemonade] Warning: Model load request failed (model may still be loading)"
