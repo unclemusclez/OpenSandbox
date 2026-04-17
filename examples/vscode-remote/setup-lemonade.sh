@@ -202,7 +202,12 @@ if [[ -n "${ADMIN_KEY}" ]]; then
 elif [[ -n "${API_KEY}" ]]; then
     PULL_ENV="LEMONADE_API_KEY=${API_KEY}"
 fi
-eval ${PULL_ENV} lemonade pull "${PREFIXED_NAME}" --checkpoint main "${MODEL}" --recipe llamacpp
+
+if python3 "${LEMONADE_PY}" status &>/dev/null && lemonade list 2>/dev/null | grep -q "${PREFIXED_NAME}.*Yes"; then
+    echo "[Lemonade] Model already downloaded: ${PREFIXED_NAME}"
+else
+    eval ${PULL_ENV} lemonade pull "${PREFIXED_NAME}" --checkpoint main "${MODEL}" --recipe llamacpp
+fi
 
 echo "[Lemonade] Loading model via API..."
 

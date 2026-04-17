@@ -391,6 +391,10 @@ class LemonadeServerManager:
             checkpoint: HuggingFace checkpoint when pulling a user model by
                 name.  Required when model starts with "user.".
         """
+        if self._is_model_downloaded(model):
+            print(f"[Lemonade] Model already downloaded: {model}")
+            return
+
         print(f"[Lemonade] Pulling model: {model}")
         env = os.environ.copy()
         auth_key = self.admin_api_key or self.api_key
@@ -405,6 +409,15 @@ class LemonadeServerManager:
 
         subprocess.run(cmd, check=True, env=env)
         print(f"[Lemonade] Model pulled: {model}")
+
+    def _is_model_downloaded(self, model: str) -> bool:
+        """Check if a model is already downloaded by reading user_models.json."""
+        bare_name = model.removeprefix("user.")
+        models = _sudo_read_json(self.config_dir / "user_models.json") or {}
+        entry = models.get(bare_name)
+        if not entry:
+            return False
+        return entry.get("downloaded", 0) == 1 or entry.get("downloaded") is True
 
     def load_model(self, model: str, timeout: int = 120) -> bool:
         """Load a model via the Lemonade HTTP API so it is ready for inference."""
