@@ -262,7 +262,7 @@ class LemonadeServerManager:
         self,
         port: int = DEFAULT_PORT,
         host: str = DEFAULT_HOST,
-        llamacpp_backend: str = "rocm",
+        llamacpp_backend: str = "auto",
         ctx_size: int = 4096,
         max_loaded_models: int = 1,
         generate_keys: bool = False,
@@ -442,7 +442,7 @@ class LemonadeServerManager:
         model: str = DEFAULT_MODEL,
         model_name: str = DEFAULT_MODEL_NAME,
         num_users: int = 1,
-        llamacpp_backend: str = "rocm",
+        llamacpp_backend: str = "auto",
     ) -> None:
         """Write user_models.json and recipe_options.json for a custom model.
 
@@ -456,6 +456,13 @@ class LemonadeServerManager:
         recipe_options_path = self.config_dir / "recipe_options.json"
 
         existing_models = _sudo_read_json(user_models_path) or {}
+
+        auto_name = model.split("/")[-1].split(":")[0]
+        auto_name_key = auto_name
+        if auto_name_key in existing_models and auto_name_key != model_name:
+            del existing_models[auto_name_key]
+            print(f"[Lemonade] Removed auto-generated entry: {auto_name_key}")
+
         existing_models[model_name] = {
             "checkpoint": model,
             "recipe": "llamacpp",
@@ -480,6 +487,12 @@ class LemonadeServerManager:
         )
 
         existing_options = _sudo_read_json(recipe_options_path) or {}
+
+        prefixed_auto_name = f"user.{auto_name}"
+        if prefixed_auto_name in existing_options and prefixed_auto_name != prefixed_name:
+            del existing_options[prefixed_auto_name]
+            print(f"[Lemonade] Removed auto-generated recipe options: {prefixed_auto_name}")
+
         prefixed_name = f"user.{model_name}"
         existing_options[prefixed_name] = {
             "ctx_size": PER_USER_CTX,
@@ -612,7 +625,7 @@ async def cmd_run(
     model_name: str = DEFAULT_MODEL_NAME,
     port: int = DEFAULT_PORT,
     host: str = DEFAULT_HOST,
-    llamacpp_backend: str = "rocm",
+    llamacpp_backend: str = "auto",
     ctx_size: int = 4096,
     max_loaded_models: int = 1,
     groups_file: Optional[str] = None,
@@ -747,8 +760,8 @@ Examples:
     config_parser.add_argument(
         "--llamacpp-backend",
         type=str,
-        default="rocm",
-        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: rocm)",
+        default="auto",
+        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: auto)",
     )
     config_parser.add_argument(
         "--prefer-system",
@@ -867,8 +880,8 @@ Examples:
     run_parser.add_argument(
         "--llamacpp-backend",
         type=str,
-        default="rocm",
-        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: rocm)",
+        default="auto",
+        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: auto)",
     )
     run_parser.add_argument(
         "--prefer-system",
@@ -973,8 +986,8 @@ Examples:
     write_model_configs_parser.add_argument(
         "--llamacpp-backend",
         type=str,
-        default="rocm",
-        help="llama.cpp backend (default: rocm)",
+        default="auto",
+        help="llama.cpp backend (default: auto)",
     )
 
     generate_kilo_parser = subparsers.add_parser(
