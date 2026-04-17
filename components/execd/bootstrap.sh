@@ -24,27 +24,38 @@ is_truthy() {
 	esac
 }
 
+_sudo() {
+	if [ "$(id -u)" -eq 0 ]; then
+		"$@"
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo -n "$@"
+	else
+		"$@"
+	fi
+}
+
 # Install mitm egress CA into the system trust store (no extra env vars).
 # - Debian/Ubuntu/Alpine: update-ca-certificates + /usr/local/share/ca-certificates/
 # - RHEL/CentOS/Fedora/Alma/Rocky: update-ca-trust + /etc/pki/ca-trust/source/anchors/
 trust_mitm_ca() {
 	cert="$1"
 	if command -v update-ca-certificates >/dev/null 2>&1; then
-		mkdir -p /usr/local/share/ca-certificates
-		cp "$cert" /usr/local/share/ca-certificates/opensandbox-mitmproxy-ca.crt
-		update-ca-certificates
+		_sudo mkdir -p /usr/local/share/ca-certificates
+		_sudo cp "$cert" /usr/local/share/ca-certificates/opensandbox-mitmproxy-ca.crt
+		_sudo update-ca-certificates
 		return 0
 	fi
 	if command -v update-ca-trust >/dev/null 2>&1; then
-		mkdir -p /etc/pki/ca-trust/source/anchors
-		cp "$cert" /etc/pki/ca-trust/source/anchors/opensandbox-mitmproxy-ca.pem
-		if ! update-ca-trust extract; then
-			update-ca-trust
+		_sudo mkdir -p /etc/pki/ca-trust/source/anchors
+		_sudo cp "$cert" /etc/pki/ca-trust/source/anchors/opensandbox-mitmproxy-ca.pem
+		if ! _sudo update-ca-trust extract; then
+			_sudo update-ca-trust
 		fi
 		return 0
 	fi
+
 	echo "warning: cannot install mitm CA (need update-ca-certificates or update-ca-trust)" >&2
-	return 1
+	return 0
 }
 
 MITM_CA="/opt/opensandbox/mitmproxy-ca-cert.pem"

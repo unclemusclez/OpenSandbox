@@ -57,12 +57,14 @@ configToml: |
   [server]
   host = "0.0.0.0"
   port = 80
-  log_level = "INFO"
   api_key = ""
+
+  [log]
+  level = "INFO"
 
   [runtime]
   type = "kubernetes"
-  execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.11"
+  execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.12"
 
   [kubernetes]
   kubeconfig_path = ""

@@ -28,7 +28,6 @@ import logging
 import math
 import os
 import posixpath
-import random
 import socket
 import tarfile
 import time
@@ -64,6 +63,20 @@ from opensandbox_server.api.schema import (
 )
 from opensandbox_server.config import AppConfig, get_config
 from opensandbox_server.services.docker_diagnostics import DockerDiagnosticsMixin
+from opensandbox_server.services.docker_port_allocator import allocate_port_bindings
+from opensandbox_server.services.docker_windows_profile import (
+    apply_windows_runtime_host_config_defaults,
+    fetch_execd_install_bat,
+    fetch_execd_windows_binary,
+    inject_windows_resource_limits_env,
+    inject_windows_user_ports,
+    install_windows_oem_scripts,
+    is_windows_platform,
+    normalize_bootstrap_command,
+    resolve_docker_platform,
+    validate_windows_resource_limits,
+    validate_windows_runtime_prerequisites, WINDOWS_OEM_VOLUME_PREFIX,
+)
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.constants import (
     EGRESS_MODE_ENV,
@@ -161,6 +174,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         self.execd_image = runtime_config.execd_image
         self.network_mode = (self.app_config.docker.network_mode or HOST_NETWORK_MODE).lower()
         self._execd_archive_cache: Dict[str, bytes] = {}
+        self._windows_profile_cache: Dict[str, bytes] = {}
         self._daemon_platform: Optional[PlatformSpec] = None
         self._api_timeout = self._resolve_api_timeout()
         try:
@@ -344,6 +358,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 self._remove_expiration_tracking(sandbox_id)
+                self._cleanup_windows_oem_volume(sandbox_id, None)
                 if fallback_mount_keys:
                     self._release_ossfs_mounts(fallback_mount_keys)
             else:
@@ -405,6 +420,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         self._remove_expiration_tracking(sandbox_id)
         # Ensure sidecar is also cleaned up on expiration
         self._cleanup_egress_sidecar(sandbox_id)
+        self._cleanup_windows_oem_volume(sandbox_id, labels)
         self._release_ossfs_mounts(mount_keys)
 
     def _restore_existing_sandboxes(self) -> None:
@@ -874,22 +890,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             expires_at = calculate_expiration_or_raise(created_at, request.timeout)
         return sandbox_id, created_at, expires_at
 
-    @staticmethod
-    def _allocate_host_port(
-        min_port: int = 40000, max_port: int = 60000, attempts: int = 50
-    ) -> Optional[int]:
-        """Find an available TCP port on the host within the given range."""
-        for _ in range(attempts):
-            port = random.randint(min_port, max_port)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                try:
-                    sock.bind(("0.0.0.0", port))
-                except OSError:
-                    continue
-                return port
-        return None
-
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox from a container image using Docker.
@@ -1049,9 +1049,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         sandbox_id: str,
         platform: Optional[PlatformSpec] = None,
     ) -> None:
-        docker_platform = None
-        if platform is not None:
-            docker_platform = f"{platform.os}/{platform.arch}"
+        docker_platform = resolve_docker_platform(platform)
         try:
             with self._docker_operation(f"pull image {image_uri}", sandbox_id):
                 pull_kwargs: dict[str, Any] = {"auth_config": auth_config}
@@ -1087,7 +1085,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         sandbox_id: str,
         platform: Optional[PlatformSpec] = None,
     ) -> None:
-        expected_platform = platform or self._get_daemon_platform()
+        expected_platform = platform
+        if expected_platform is not None and is_windows_platform(expected_platform):
+            expected_platform = None
+        if expected_platform is None:
+            expected_platform = self._get_daemon_platform()
         try:
             with self._docker_operation(f"inspect image {image_uri}", sandbox_id):
                 image = self.docker_client.images.get(image_uri)
@@ -1157,6 +1159,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
         mem_limit, nano_cpus = self._resolve_resource_limits(request)
         egress_token: Optional[str] = None
+        requested_windows_profile = is_windows_platform(request.platform)
+
+        if requested_windows_profile:
+            validate_windows_resource_limits(request.resource_limits.root or {})
+            validate_windows_runtime_prerequisites()
 
         # Prepare OSSFS mounts first so binds can reference mounted host paths.
         ossfs_mount_keys = self._prepare_ossfs_mounts(request.volumes)
@@ -1168,6 +1175,13 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
         sidecar_container = None
         try:
+            # For dockur/windows profile, resourceLimits are translated to
+            # guest envs (RAM_SIZE/CPU_CORES/DISK_SIZE). Avoid applying
+            # container cgroup memory/cpu limits to the outer Linux container,
+            # which can OOM-kill QEMU during installation/runtime.
+            effective_mem_limit = None if requested_windows_profile else mem_limit
+            effective_nano_cpus = None if requested_windows_profile else nano_cpus
+
             # Build volume bind mounts from request volumes.
             # pvc_inspect_cache carries Docker volume inspect data from the
             # validation phase, avoiding a redundant API call.
@@ -1179,7 +1193,9 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             if request.network_policy:
                 egress_token = generate_egress_token()
                 labels[SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] = egress_token
-                host_execd_port, host_http_port = self._allocate_distinct_host_ports()
+                sidecar_port_bindings = allocate_port_bindings(["44772", "8080"])
+                host_execd_port = sidecar_port_bindings["44772"][1]
+                host_http_port = sidecar_port_bindings["8080"][1]
                 sidecar_container = self._start_egress_sidecar(
                     sandbox_id=sandbox_id,
                     network_policy=request.network_policy,
@@ -1190,7 +1206,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                 labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
                 host_config_kwargs = self._base_host_config_kwargs(
-                    mem_limit, nano_cpus, f"container:{sidecar_container.id}"
+                    effective_mem_limit, effective_nano_cpus, f"container:{sidecar_container.id}"
                 )
                 # Drop NET_ADMIN for the main container; only the sidecar should keep it
                 cap_drop = set(host_config_kwargs.get("cap_drop") or [])
@@ -1199,22 +1215,34 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     host_config_kwargs["cap_drop"] = list(cap_drop)
             else:
                 host_config_kwargs = self._base_host_config_kwargs(
-                    mem_limit, nano_cpus, self.network_mode
+                    effective_mem_limit, effective_nano_cpus, self.network_mode
                 )
                 if self.network_mode != HOST_NETWORK_MODE:
-                    host_execd_port, host_http_port = self._allocate_distinct_host_ports()
-                    port_bindings = {
-                        "44772": ("0.0.0.0", host_execd_port),
-                        "8080": ("0.0.0.0", host_http_port),
-                    }
+                    exposed_ports = ["44772", "8080"]
+                    if requested_windows_profile:
+                        # dockur/windows exposes RDP and noVNC/web UI on these ports.
+                        # https://github.com/dockur/windows/blob/master/Dockerfile
+                        exposed_ports.extend(["3389/tcp", "3389/udp", "8006/tcp"])
+                    port_bindings = allocate_port_bindings(exposed_ports)
+                    host_execd_port = port_bindings["44772"][1]
+                    host_http_port = port_bindings["8080"][1]
                     host_config_kwargs["port_bindings"] = port_bindings
-                    exposed_ports = list(port_bindings.keys())
                     labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                     labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
 
             # Inject volume bind mounts into Docker host config
             if volume_binds:
                 host_config_kwargs["binds"] = volume_binds
+            if requested_windows_profile:
+                host_config_kwargs = apply_windows_runtime_host_config_defaults(
+                    host_config_kwargs,
+                    sandbox_id,
+                )
+                environment = inject_windows_resource_limits_env(
+                    environment,
+                    request.resource_limits.root or {},
+                )
+                environment = inject_windows_user_ports(environment, exposed_ports)
 
             created_container = self._create_and_start_container(
                 sandbox_id,
@@ -1394,6 +1422,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         # any edge-case bypass.
         if allowed_prefixes and resolved_path != volume.host.path:
             ensure_valid_host_path(resolved_path, allowed_prefixes)
+
+        # Allow existing host files (for example ISO binds to /boot.iso)
+        # without attempting directory creation.
+        if os.path.isfile(resolved_path):
+            return
 
         try:
             os.makedirs(resolved_path, exist_ok=True)
@@ -1774,7 +1807,31 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         finally:
             self._remove_expiration_tracking(sandbox_id)
             self._cleanup_egress_sidecar(sandbox_id)
+            self._cleanup_windows_oem_volume(sandbox_id, labels)
             self._release_ossfs_mounts(mount_keys)
+
+    def _cleanup_windows_oem_volume(
+        self,
+        sandbox_id: str,
+        labels: Optional[dict[str, str]],
+    ) -> None:
+        """Best-effort cleanup for windows profile OEM named volume."""
+        if labels is not None and labels.get(SANDBOX_PLATFORM_OS_LABEL) != "windows":
+            return
+
+        volume_name = f"{WINDOWS_OEM_VOLUME_PREFIX}-{sandbox_id}"
+        try:
+            with self._docker_operation("remove windows oem volume", sandbox_id):
+                self.docker_client.api.remove_volume(volume_name)
+        except DockerNotFound:
+            return
+        except DockerException as exc:
+            logger.warning(
+                "sandbox=%s | failed to remove windows OEM volume %s: %s",
+                sandbox_id,
+                volume_name,
+                exc,
+            )
 
     def pause_sandbox(self, sandbox_id: str) -> None:
         """
@@ -2145,29 +2202,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             host_config_kwargs["runtime"] = self.docker_runtime
         return host_config_kwargs
 
-    def _allocate_distinct_host_ports(self) -> tuple[int, int]:
-        host_execd_port = self._allocate_host_port()
-        host_http_port = self._allocate_host_port()
-        if host_execd_port is None or host_http_port is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                    "message": "Failed to allocate host ports for sandbox container.",
-                },
-            )
-        while host_http_port == host_execd_port:
-            host_http_port = self._allocate_host_port()
-            if host_http_port is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                        "message": "Failed to allocate distinct host ports for sandbox container.",
-                    },
-                )
-        return host_execd_port, host_http_port
-
     def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
         """
         Remove egress sidecar associated with sandbox_id (best effort).
@@ -2308,11 +2342,12 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         exposed_ports: Optional[list[str]],
         platform: Optional[PlatformSpec],
     ):
-        # Normalize single-string entrypoint containing spaces to avoid shell path issues in bootstrap.
-        if len(bootstrap_command) == 1 and " " in bootstrap_command[0]:
-            import shlex
-
-            bootstrap_command = shlex.split(bootstrap_command[0])
+        requested_windows_platform = is_windows_platform(platform)
+        bootstrap_command = normalize_bootstrap_command(
+            bootstrap_command,
+            requested_windows_platform,
+        )
+        docker_platform = resolve_docker_platform(platform)
 
         host_config = self.docker_client.api.create_host_config(**host_config_kwargs)
         container = None
@@ -2321,7 +2356,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             with self._docker_operation("create sandbox container", sandbox_id):
                 container_kwargs = {
                     "image": image_uri,
-                    "entrypoint": [BOOTSTRAP_PATH],
                     "command": bootstrap_command,
                     "ports": exposed_ports,
                     "name": f"sandbox-{sandbox_id}",
@@ -2329,8 +2363,10 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     "labels": labels,
                     "host_config": host_config,
                 }
-                if platform is not None:
-                    container_kwargs["platform"] = f"{platform.os}/{platform.arch}"
+                if not requested_windows_platform:
+                    container_kwargs["entrypoint"] = [BOOTSTRAP_PATH]
+                if docker_platform is not None:
+                    container_kwargs["platform"] = docker_platform
 
                 response = self.docker_client.api.create_container(**container_kwargs)
             container_id = response.get("Id")
@@ -2348,7 +2384,37 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 labels,
                 include_runtime_metadata=True,
             )
-            self._prepare_sandbox_runtime(container, sandbox_id, runtime_platform)
+            if requested_windows_platform:
+                install_bat_bytes = fetch_execd_install_bat(
+                    docker_client=self.docker_client,
+                    execd_image=self.execd_image,
+                    cache=self._windows_profile_cache,
+                    cache_lock=self._execd_archive_lock,
+                    docker_operation=self._docker_operation,
+                    logger=logger,
+                )
+                execd_windows_bin_bytes = fetch_execd_windows_binary(
+                    docker_client=self.docker_client,
+                    execd_image=self.execd_image,
+                    cache=self._windows_profile_cache,
+                    cache_lock=self._execd_archive_lock,
+                    docker_operation=self._docker_operation,
+                    logger=logger,
+                )
+                install_windows_oem_scripts(
+                    container=container,
+                    sandbox_id=sandbox_id,
+                    install_bat_bytes=install_bat_bytes,
+                    execd_windows_bin_bytes=execd_windows_bin_bytes,
+                    ensure_directory=self._ensure_directory,
+                    docker_operation=self._docker_operation,
+                )
+                logger.info(
+                    "sandbox=%s | skip linux bootstrap/runtime injection for windows profile",
+                    sandbox_id,
+                )
+            else:
+                self._prepare_sandbox_runtime(container, sandbox_id, runtime_platform)
             with self._docker_operation("start sandbox container", sandbox_id):
                 container.start()
             return container
@@ -2376,8 +2442,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
             if isinstance(exc, HTTPException):
                 raise exc
-            if isinstance(exc, TypeError) and platform is not None:
-                docker_platform = f"{platform.os}/{platform.arch}"
+            if isinstance(exc, TypeError) and docker_platform is not None:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
