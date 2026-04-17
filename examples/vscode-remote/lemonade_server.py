@@ -517,7 +517,7 @@ class LemonadeServerManager:
 
         prefixed_name = f"user.{model_name}"
         existing_options[prefixed_name] = {
-            "ctx_size": PER_USER_CTX,
+            "ctx_size": total_ctx,
             "llamacpp_backend": llamacpp_backend,
             "llamacpp_args": llamacpp_args,
         }
@@ -672,6 +672,8 @@ async def cmd_run(
     elif num_users < 1:
         num_users = 1
 
+    total_ctx = PER_USER_CTX * num_users
+
     manager = LemonadeServerManager(
         api_key=api_key,
         admin_api_key=admin_api_key,
@@ -692,7 +694,7 @@ async def cmd_run(
         port=port,
         host=host,
         llamacpp_backend=llamacpp_backend,
-        ctx_size=PER_USER_CTX,
+        ctx_size=total_ctx,
         max_loaded_models=max_loaded_models,
         generate_keys=generate_keys,
         prefer_system=prefer_system,
