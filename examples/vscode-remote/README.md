@@ -1,651 +1,301 @@
-# VS Code Remote - Multi-Instance Example
+# VS Code Remote - Multi-Instance Hackathon Example
 
-This example demonstrates how to run multiple VS Code sandbox instances concurrently, each with its own workspace and code-server instance.
+Run multiple VS Code sandbox instances concurrently with nginx SSL reverse proxy,
+groups-based user management, persistent workspaces, and optional local LLM inference
+via Lemonade Server.
 
-## Overview
+## Quick Start
 
-The VS Code Remote example extends the basic VS Code example by supporting:
-
-- **Multiple concurrent instances**: Run multiple VS Code sandboxes simultaneously
-- **Workspace separation**: Each instance has its own isolated workspace directory
-- **Port allocation**: Automatic port allocation for each instance (e.g., 8443, 8444, 8445)
-- **Configurable timeout**: Control how long sandboxes remain active
-
-## SSL/TLS Architecture
-
-This example supports three HTTPS modes:
-
-### Mode 1: Proxy-Based HTTPS (Default)
-
-The OpenSandbox server acts as a proxy that can terminate SSL at the edge. This architecture enables:
-
-- **WebSockets support**: Required for real-time features like live share and terminal
-- **Plugin support**: Many VS Code extensions require HTTPS to function properly
-- **Secure connections**: All traffic is encrypted between the browser and the OpenSandbox server
-
-#### How Proxy-Based HTTPS Works
-
-1. **code-server** runs inside the sandbox over plain HTTP (e.g., `http://localhost:8443`)
-2. **OpenSandbox server** proxies requests from the browser to the sandbox
-3. **SSL termination** happens at the OpenSandbox server edge (if configured)
-
-> **Important**: If your OpenSandbox server is not configured with SSL, use `http://` URLs. The `SSL_ERROR_RX_RECORD_TOO_LONG` error occurs when trying to access an HTTP endpoint with HTTPS.
-
-### Mode 2: Container HTTPS with mkcert (Local Development)
-
-For local development, you can run code-server directly over HTTPS using mkcert-generated certificates. This is useful for testing VS Code extensions that require HTTPS.
-
-#### How Container HTTPS Works
-
-1. **mkcert** creates a local CA and generates certificates trusted by your browser
-2. **Certificates are injected** into each container's filesystem at `/tmp/cert.pem` and `/tmp/key.pem`
-3. **code-server** runs inside the sandbox with `--cert /tmp/cert.pem` and `--cert-key /tmp/key.pem` flags
-4. **Browser** trusts the mkcert CA (after installing it once)
-
-> **Note**: This mode is only useful for local development. The mkcert CA must be installed on your machine for browsers to trust the certificates.
-
-#### Quick Start with mkcert
-
-```shell
-# Install mkcert (if not already installed)
-# Windows: winget install FiloSottile.mkcert
-# macOS: brew install mkcert
-# Linux: curl -JLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64" && sudo install mkcert -v /usr/local/bin/
-
-# Install the local CA
-mkcert --install
-
-# Generate wildcard certificate (*.localhost)
-uv run python examples/vscode-remote/generate-certs.py
-
-# Run VS Code instances with HTTPS (certificates are automatically injected into containers)
-uv run python examples/vscode-remote/main.py --instances 3 --https \
-  --cert examples/vscode-remote/certs/localhost.pem --key examples/vscode-remote/certs/localhost-key.pem
-```
-
-#### Per-Sandbox Certificates
-
-For more granular control, generate individual certificates per sandbox:
-
-```shell
-# Generate per-sandbox certificates
-uv run python examples/vscode-remote/generate-certs.py --per-sandbox \
-  --sandbox vscode-8443 --sandbox vscode-8444 --sandbox vscode-8445
-
-# Run with per-sandbox certificates
-uv run python examples/vscode-remote/main.py --instances 3 --https \
-  --cert ./certs/vscode-8443.pem --key ./certs/vscode-8443-key.pem \
-  --cert ./certs/vscode-8444.pem --key ./certs/vscode-8444-key.pem \
-  --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
-```
-
-#### Certificate Injection Process
-
-When HTTPS is enabled, the main.py script automatically:
-
-1. Reads the certificate and key files from the host filesystem
-2. Injects them into each container's `/tmp/` directory
-3. Sets proper permissions on the key file (`chmod 600`)
-4. Configures code-server to use the injected certificates
-
-This process happens automatically for each container, ensuring that each sandbox instance has its own copy of the certificates.
-
-#### Security Considerations
-
-- **Local CA only**: mkcert certificates are only trusted on your local machine
-- **Not for production**: Do not use mkcert in production environments
-- **Install CA once**: Run `mkcert --install` once to install the local CA
-- **Certificate expiration**: mkcert certificates expire after 1-2 years; regenerate as needed
-- **Container isolation**: Each container receives its own copy of certificates, preventing cross-container access
-
-## External Access Configuration
-
-By default, sandboxes are accessible via the OpenSandbox server's proxy. The URLs you see (e.g., `http://127.0.0.1:43876/proxy/8443/`) are proxied through the server. To make them reachable from the outside world, you have several options:
-
-### Option 1: Public Domain with OpenSandbox Server
-
-Configure your OpenSandbox server with a public domain in `~/.sandbox.toml`:
-
-```toml
-[server]
-domain = "your-domain.com"  # Public domain
-bind_address = "0.0.0.0"    # Listen on all interfaces
-port = 8080
-```
-
-Then access via:
-```
-https://your-domain.com/sandbox/{sandbox-id}/proxy/{port}/
-```
-
-The URLs will be HTTPS because the OpenSandbox server handles SSL termination at the proxy level.
-
-### Option 2: Port Forwarding (Local Development)
-
-For local development, use SSH port forwarding:
-
-```shell
-# Forward sandbox ports to local machine
-ssh -L 8443:localhost:43876 user@opensandbox-server
-ssh -L 8444:localhost:58260 user@opensandbox-server
-ssh -L 8445:localhost:42981 user@opensandbox-server
-```
-
-Then access via `http://localhost:8443/`, `http://localhost:8444/`, etc.
-
-### Mode 3: Nginx Reverse Proxy (New)
-
-For development and testing, use nginx reverse proxy with automatic SSL certificate generation:
-
-#### How Nginx Reverse Proxy Works
-
-1. **Random Subdomain Generation**: Generates a random subdomain (e.g., `abc12345.localhost`)
-2. **SSL Certificate Generation**: Creates self-signed SSL certificate for the subdomain
-3. **Nginx Configuration**: Generates nginx config file in `/etc/nginx/sites-available/`
-4. **Enable Site**: Creates symlink to `/etc/nginx/sites-enabled/`
-5. **Reload Nginx**: Reloads nginx to apply configuration
-6. **Access**: Users access via `https://<random-subdomain>.localhost/`
-
-#### Advantages
-
-- **Automatic SSL**: No need to manually generate certificates
-- **Unique URLs**: Each sandbox gets a unique subdomain
-- **WebSocket Support**: Full WebSocket support through nginx
-- **Production Ready**: Can be extended to use Let's Encrypt for production
-
-#### Prerequisites
+### 1. One-time Setup
 
 ```bash
-# Install nginx
-sudo apt-get install nginx
-
-# Create directories
-sudo mkdir -p /etc/nginx/sites-available
-sudo mkdir -p /etc/nginx/sites-enabled
-sudo mkdir -p /etc/nginx/ssl
-
-# Set permissions
-sudo chown -R $USER:$USER /etc/nginx/sites-available
-sudo chown -R $USER:$USER /etc/nginx/sites-enabled
-sudo chown -R $USER:$USER /etc/nginx/ssl
-
-# Install cryptography library
-pip install cryptography
+bash examples/vscode-remote/setup.sh
 ```
 
-#### Quick Start with Nginx
+Installs python3, nginx, docker.io, mkcert, and openssl.
 
-```shell
-# Run single instance with nginx proxy
-uv run python examples/vscode-remote/main.py \
-    --instances 1 \
-    --use-nginx \
-    --nginx-domain localhost \
-    --workspace test
+### 2. Build the Docker Image
 
-# Run multiple instances with nginx proxy
-uv run python examples/vscode-remote/main.py \
-    --instances 3 \
-    --use-nginx \
-    --nginx-domain localhost \
-    --workspace test
+```bash
+docker build -t opensandbox/vscode-remote:latest examples/vscode-remote/
 ```
 
-#### Example Output
+### 3. Define Groups
 
-```
-Starting 1 VS Code sandbox instance(s)...
-  Domain: localhost:8080
-  Image: opensandbox/vscode:latest
-  Workspace: test
-  Port range: 8443 - 8443
-  Timeout: 10 minutes
-  Nginx: Yes
-
-[Instance 0] Injecting certificates into container...
-[Instance 0] Certificates injected successfully
-[Nginx] Generating configuration for instance 0...
-[SSL] Generated subdomain: abc12345.localhost
-[SSL] Certificate saved: /etc/nginx/ssl/abc12345.localhost.crt
-[SSL] Key saved: /etc/nginx/ssl/abc12345.localhost.key
-[Nginx] Configuration created: /etc/nginx/sites-available/sandbox-abc12345.localhost
-[Nginx] Configuration enabled: /etc/nginx/sites-enabled/sandbox-abc12345.localhost
-[Nginx] Reloaded successfully
-[Nginx] Configuration enabled for: https://abc12345.localhost/
-[Instance 0] Starting code-server with HTTP on port 8443 (proxy mode)
-
-============================================================
-VS Code Web Endpoints
-============================================================
-
-  Instance 1:
-    Workspace: test
-    Port: 8443
-    URL: http://127.0.0.1:43876/proxy/8443/
-    Nginx URL: https://abc12345.localhost/
-```
-
-#### Security Considerations
-
-- **Self-Signed Certificates**: Certificates are self-signed and will show browser warnings
-- **Local Development Only**: This mode is intended for development and testing
-- **Production**: For production, use Let's Encrypt with nginx
-- **Certificate Expiration**: Self-signed certificates expire after 1 year by default
-
-#### Cleanup
-
-When you stop the script (Ctrl+C), nginx configurations are automatically cleaned up:
-- Nginx configuration files are deleted from `/etc/nginx/sites-available/`
-- Symlinks are removed from `/etc/nginx/sites-enabled/`
-- Nginx is reloaded to apply changes
-
-### Option 3: Reverse Proxy with Public IPs
-
-Configure a reverse proxy (nginx, Traefik) to expose sandbox ports:
-
-```nginx
-# nginx configuration
-location /vscode-1/ {
-    proxy_pass http://127.0.0.1:43876/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-
-location /vscode-2/ {
-    proxy_pass http://127.0.0.1:58260/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-```
-
-### Option 4: Kubernetes Ingress
-
-If running on Kubernetes, configure Ingress resources:
+Create `groups.yaml`:
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: vscode-ingress
-spec:
-  rules:
-  - host: vscode.example.com
-    http:
-      paths:
-      - path: /vscode-1
-        pathType: Prefix
-        backend:
-          service:
-            name: sandbox-1
-            port:
-              number: 8443
+groups:
+  alpha:
+    users:
+      - alice
+      - bob
+  beta:
+    users:
+      - dave
 ```
 
-## Configure SSL for OpenSandbox Server
-
-The OpenSandbox server itself runs over HTTP. To enable HTTPS, you need to place a reverse proxy in front of it. Here's how to configure nginx with SSL:
-
-### Step 1: Generate SSL Certificates
-
-Using Let's Encrypt (recommended for production):
-```bash
-# Install certbot
-sudo apt-get install certbot
-
-# Obtain SSL certificate
-sudo certbot certonly --standalone -d your-domain.com
-```
-
-Using self-signed certificates (for development):
-```bash
-# Generate private key
-openssl genrsa -out server.key 2048
-
-# Generate certificate
-openssl req -new -x509 -key server.key -out server.crt -days 365 -subj "/CN=localhost"
-```
-
-### Step 2: Configure nginx
-
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name your-domain.com;
-
-    ssl_certificate /path/to/server.crt;
-    ssl_certificate_key /path/to/server.key;
-
-    # SSL settings
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-
-    # WebSocket support for code-server
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-
-# Redirect HTTP to HTTPS
-server {
-    listen 80;
-    server_name your-domain.com;
-    return 301 https://$host$request_uri;
-}
-```
-
-### Step 3: Start nginx
+### 4. Run
 
 ```bash
-sudo nginx -t  # Test configuration
-sudo systemctl start nginx
-sudo systemctl enable nginx
+python examples/vscode-remote/main.py --groups groups.yaml --external-ip 1.2.3.4
 ```
 
-## Build the VS Code Sandbox Image
+Each user gets their own VS Code sandbox at `https://<ip>/<endpoint_path>/`.
 
-The Dockerfile in this directory builds a sandbox image with code-server pre-installed:
+## Architecture
 
-```shell
-cd examples/vscode-remote
-docker build -t opensandbox/vscode:latest .
+| Component | Role |
+|-----------|------|
+| **main.py** | Orchestrates sandbox creation, nginx configs, workspace setup |
+| **nginx** | SSL termination + WebSocket proxy (per-port server blocks) |
+| **code-server** | VS Code in the browser, runs HTTP inside each sandbox |
+| **Lemonade Server** | Optional local LLM inference (OpenAI-compatible API) |
+
+### Network Modes (auto-detected)
+
+| Mode | Endpoint Format | Detection |
+|------|----------------|-----------|
+| **Host** | `127.0.0.1:8443` | No `/` after port |
+| **Bridge** | `127.0.0.1:52322/proxy/8443` | `/proxy/` in endpoint |
+
+Auto-detected from the server-returned endpoint — not a CLI flag.
+
+### SSL/TLS
+
+- **mkcert** (preferred): CA-trusted certs, filename includes IP hash
+- **openssl** (fallback): Self-signed certs with IP in SAN
+- Single shared cert for all instances on port 443
+- CA cert served at `https://<ip>/ca.crt` for remote clients
+
+### Persistent Workspaces
+
+With `--workspace-dir /vs-code-remote`, each user gets a host bind mount:
+
+- Host path: `/vs-code-remote/{group}/{username}`
+- Container mount: `/workspace/{group}/{username}`
+- Without it, workspace is ephemeral (inside container only)
+
+## CLI Reference
+
 ```
-
-This image includes:
-- code-server (VS Code Web) pre-installed
-- Non-root user (vscode) for security
-- Workspace directory at `/workspace`
-
-## Start OpenSandbox Server [local]
-
-Pre-pull the VS Code image:
-
-```shell
-docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/vscode:latest
+python main.py [OPTIONS]
 ```
-
-Start the local OpenSandbox server:
-
-```shell
-uv pip install opensandbox-server
-opensandbox-server init-config ~/.sandbox.toml --example docker
-opensandbox-server
-```
-
-## Create and Access Multiple VS Code Sandboxes
-
-### Basic Usage
-
-```shell
-# Install OpenSandbox package
-uv pip install opensandbox
-
-# Run 3 concurrent VS Code instances
-uv run python examples/vscode-remote/main.py --instances 3
-```
-
-### Custom Configuration
-
-```shell
-# Run 2 instances with custom workspace and starting port
-uv run python examples/vscode-remote/main.py \
-  --instances 2 \
-  --workspace myproject \
-  --port 8443
-
-# Run with custom timeout (30 minutes)
-uv run python examples/vscode-remote/main.py \
-  --instances 2 \
-  --timeout 30
-
-# Run with custom domain and API key
-SANDBOX_DOMAIN="your-domain.com" \
-SANDBOX_API_KEY="your-api-key" \
-uv run python examples/vscode-remote/main.py \
-  --instances 2
-```
-
-### Command-Line Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--instances` | Number of concurrent sandbox instances | `1` |
-| `--workspace` | Workspace name for all instances | `default` |
-| `--port` | Starting port for code-server instances | `8443` |
-| `--timeout` | Timeout in minutes to keep sandboxes alive | `10` |
-| `--domain` | Sandbox domain | `localhost:8080` |
-| `--api-key` | Sandbox API key | (none) |
-| `--image` | Docker image for sandbox | `opensandbox/vscode:latest` |
-| `--python-version` | Python version for the sandbox | `3.11` |
-| `--https` | Use HTTPS (requires --cert and --key flags) | `false` |
-| `--cert` | Certificate file path (can be specified multiple times) | (none) |
-| `--key` | Certificate key file path (can be specified multiple times) | (none) |
-| `--use-nginx` | Use nginx reverse proxy with automatic SSL | `false` |
-| `--nginx-domain` | Base domain for nginx subdomains | `localhost` |
+| `--groups FILE` | Path to groups.yaml | (none, single instance) |
+| `--group GROUP` | Run only this group from groups.yaml | (all groups) |
+| `--port PORT` | Starting port for code-server | `8443` |
+| `--timeout MIN` | Sandbox timeout in minutes | `0` (no timeout) |
+| `--domain DOMAIN` | Sandbox server domain | `localhost:8080` |
+| `--api-key KEY` | Sandbox API key | (none) |
+| `--image IMAGE` | Docker image | `opensandbox/vscode-remote:latest` |
+| `--python-version VER` | Python version in sandbox | `3.11` |
+| `--secure` | Enable per-user passwords | `false` |
+| `--external-ip IP` | External IP for SSL and URLs | auto-detected |
+| `--ssl-dir DIR` | SSL cert storage directory | `/etc/nginx/ssl` |
+| `--no-nginx` | Disable nginx, use direct HTTP | `false` |
+| `--workspace-dir DIR` | Host dir for persistent bind mounts | (none) |
+| `--lemonade KILO_JSON` | kilo.json path for LLM config injection | (none) |
+| `--vscode-settings JSON` | VS Code settings file to inject | (none) |
+| `--cleanup` | Remove all nginx configs and exit | `false` |
 
-### HTTPS Usage
+### Examples
 
-If you have generated certificates using mkcert, use the `--https` flag with `--cert` and `--key`:
+```bash
+# All groups with nginx SSL (default)
+python main.py --groups groups.yaml --external-ip 1.2.3.4
 
-```shell
-# Use wildcard certificate for all instances
-uv run python examples/vscode-remote/main.py --instances 3 --https \
-  --cert ./certs/localhost.pem --key ./certs/localhost-key.pem
+# Single group
+python main.py --groups groups.yaml --group alpha --external-ip 1.2.3.4
 
-# Use per-sandbox certificates
-uv run python examples/vscode-remote/main.py --instances 3 --https \
-  --cert ./certs/vscode-8443.pem --key ./certs/vscode-8443-key.pem \
-  --cert ./certs/vscode-8444.pem --key ./certs/vscode-8444-key.pem \
-  --cert ./certs/vscode-8445.pem --key ./certs/vscode-8445-key.pem
+# Per-user passwords
+python main.py --groups groups.yaml --secure --external-ip 1.2.3.4
+
+# Persistent workspaces
+python main.py --groups groups.yaml --workspace-dir /vs-code-remote --external-ip 1.2.3.4
+
+# Direct HTTP (no nginx)
+python main.py --groups groups.yaml --no-nginx
+
+# Single instance (no groups)
+python main.py
+
+# With Lemonade LLM inference
+python main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
+
+# With custom VS Code settings
+python main.py --groups groups.yaml --external-ip 1.2.3.4 --vscode-settings vscode-settings.jsonc
+
+# Cleanup nginx configs
+python main.py --cleanup
 ```
 
-### Nginx Reverse Proxy Usage
+## Lemonade Server (Local LLM Inference)
 
-Use the `--use-nginx` flag to enable automatic nginx reverse proxy with SSL:
+Provides an OpenAI-compatible API endpoint for VS Code extensions (Kilo Code, Continue, Cline)
+inside sandbox containers. Runs as a **systemd service** on the host.
 
-```shell
-# Run single instance with nginx proxy
-uv run python examples/vscode-remote/main.py \
-    --instances 1 \
-    --use-nginx \
-    --nginx-domain localhost \
-    --workspace test
+### Setup
 
-# Run multiple instances with nginx proxy
-uv run python examples/vscode-remote/main.py \
-    --instances 3 \
-    --use-nginx \
-    --nginx-domain localhost \
-    --workspace test
+```bash
+# Full setup (install + configure + API keys + pull model + kilo.json)
+bash examples/vscode-remote/setup-lemonade.sh \
+    --groups groups.yaml --generate-keys --external-ip 1.2.3.4
 ```
 
-### Example Output
+Or use the Python wrapper:
 
-```
-Starting 3 VS Code sandbox instance(s)...
-  Domain: localhost:8080
-  Image: opensandbox/vscode:latest
-  Workspace: default
-  Port range: 8443 - 8445
-  Timeout: 10 minutes
-  HTTPS: Yes
-  Certificate: ./certs/localhost.pem (wildcard)
-
-[Instance 0] Injecting certificates into container...
-[Instance 0] Certificates injected successfully
-[Instance 1] Injecting certificates into container...
-[Instance 1] Certificates injected successfully
-[Instance 2] Injecting certificates into container...
-[Instance 2] Certificates injected successfully
-
-============================================================
-VS Code Web Endpoints (HTTPS - mkcert local CA)
-============================================================
-
-  Instance 1:
-    Workspace: default
-    Port: 8443
-    URL: https://127.0.0.1:43876/proxy/8443/
-
-  Instance 2:
-    Workspace: default
-    Port: 8444
-    URL: https://127.0.0.1:58260/proxy/8444/
-
-  Instance 3:
-    Workspace: default
-    Port: 8445
-    URL: https://127.0.0.1:42981/proxy/8445/
-
-Keeping sandboxes alive for 10 minutes. Press Ctrl+C to exit sooner.
+```bash
+python examples/vscode-remote/lemonade_server.py run \
+    --groups groups.yaml --generate-keys --external-ip 1.2.3.4
 ```
 
-> **Troubleshooting SSL Errors**:
-> - **`SSL_ERROR_RX_RECORD_TOO_LONG`**: You're trying to access an HTTP endpoint with HTTPS. Use `http://` URLs for HTTP mode, or ensure you've enabled HTTPS with the `--https` flag and proper certificates.
-> - **`ERR_CERT_AUTHORITY_INVALID`**: The mkcert CA is not installed on your machine. Run `mkcert --install` to install the local CA.
-> - **Certificate not found**: Ensure the certificate and key files exist at the paths specified with `--cert` and `--key` flags.
-> - **Container certificate injection failed**: Check that the sandbox has write permissions to `/tmp/` directory.
+### Service Management
 
-## Use Cases
-
-### 1. Team Collaboration
-
-Run multiple instances for different team members, each with their own workspace:
-
-```shell
-# Instance for developer A
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace dev-a \
-  --port 8443
-
-# Instance for developer B (run in another terminal)
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace dev-b \
-  --port 8444
+```bash
+sudo systemctl status lemonade-server
+sudo systemctl stop lemonade-server
+sudo systemctl restart lemonade-server
+sudo journalctl -u lemonade-server -f
 ```
 
-### 2. Parallel Development Environments
+### Configuration
 
-Create separate environments for different projects:
+| File | Location | Purpose |
+|------|----------|---------|
+| config.json | `/var/lib/lemonade/.cache/lemonade/config.json` | Server settings (port, host, backend) |
+| user_models.json | Same directory | User-registered custom models |
+| server_models.json | Same directory | Server-suggested models |
+| recipe_options.json | Same directory | Per-model runtime settings (ctx_size, backend, args) |
+| API keys | `/etc/systemd/system/lemonade-server.service.d/override.conf` | LEMONADE_API_KEY, LEMONADE_ADMIN_API_KEY |
 
-```shell
-# Project A environment
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace project-a \
-  --port 8443
+### Default Model
 
-# Project B environment
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace project-b \
-  --port 8444
+| Field | Value |
+|-------|-------|
+| Checkpoint | `unsloth/gemma-4-31B-it-GGUF:Q8_K_XL` |
+| Short name | `gemma-4-31b-it` (API name: `user.gemma-4-31b-it`) |
+| Recipe | `llamacpp` with auto-detected backend |
+| mmproj | `mmproj-BF16.gguf` (vision model) |
 
-# Project C environment
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace project-c \
-  --port 8445
+### Per-User Scaling
+
+When `--groups groups.yaml` is passed, context size and parallel slots scale automatically:
+
+| Parameter | Value |
+|-----------|-------|
+| `ctx_size` | `262144 × num_users` (total context) |
+| `-np` | `num_users` (parallel slots) |
+
+Lemonade-managed args (reserved, must NOT appear in `llamacpp_args`):
+`--ctx-size`, `-c`, `-ngl`, `--gpu-layers`, `--n-gpu-layers`, `--jinja`, `--no-jinja`,
+`--model`, `-m`, `--port`, `--embedding`, `--embeddings`, `--mmproj*`, `--rerank*`
+
+### setup-lemonade.sh Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--groups FILE` | groups.yaml for user count | (none) |
+| `--group GROUP` | Filter to single group | (all) |
+| `--num-users N` | Override parallel user count | `1` |
+| `--port PORT` | Server port | `13305` |
+| `--host HOST` | Bind address | `0.0.0.0` |
+| `--backend BACKEND` | llama.cpp backend: auto, vulkan, cpu | `auto` |
+| `--ctx-size SIZE` | Per-user context size | `262144` |
+| `--model MODEL` | HuggingFace checkpoint | `unsloth/gemma-4-31B-it-GGUF:Q8_K_XL` |
+| `--model-name NAME` | Short model name | `gemma-4-31b-it` |
+| `--mmproj FILE` | Vision mmproj filename | `mmproj-BF16.gguf` |
+| `--external-ip IP` | External IP for kilo.json | (auto-detect) |
+| `--generate-keys` | Generate API keys | `false` |
+| `--no-prefer-system` | Use bundled llama.cpp | (system preferred) |
+| `--llamacpp-bin PATH` | Path to system llama-server | `/usr/local/bin/llama-server` |
+| `--kilo-config PATH` | Output path for kilo.json | `./kilo.json` |
+
+### Building llama.cpp from Source (AMD MI300X)
+
+```bash
+bash examples/vscode-remote/build-amd-mi300x-llama-server.sh
 ```
 
-### 3. Testing and QA
+Builds llama.cpp with ROCm/HIP for `gfx942` and installs to `/usr/local`. The Lemonade
+config uses `prefer_system: true` with `rocm_bin: /usr/local/bin/llama-server` by default.
 
-Run multiple instances for testing different configurations:
+### Kilo Code Integration
 
-```shell
-# Test instance with Python 3.10
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace test-py310 \
-  --python-version 3.10 \
-  --port 8443
+1. `setup-lemonade.sh --generate-keys` creates API keys and writes `kilo.json`
+2. `kilo.json` contains: provider (`lemonade`), base URL, API key, model ID (`user.gemma-4-31b-it`)
+3. Base URL resolution: `--external-ip` > Docker bridge gateway > `localhost`
+4. `main.py --lemonade kilo.json` injects config into each sandbox at `/home/vscode/.config/kilo/config.json`
+5. Kilo Code reads the config and connects to the Lemonade server
 
-# Test instance with Python 3.11
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace test-py311 \
-  --python-version 3.11 \
-  --port 8444
+### Full Workflow
 
-# Test instance with Python 3.12
-uv run python examples/vscode-remote/main.py \
-  --instances 1 \
-  --workspace test-py312 \
-  --python-version 3.12 \
-  --port 8445
+```bash
+# Terminal 1: Set up Lemonade server with groups-based scaling
+bash setup-lemonade.sh --groups groups.yaml --generate-keys --external-ip 1.2.3.4
+
+# Terminal 2: Start VS Code sandboxes with Lemonade inference
+python main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
 ```
 
-## Workspace Isolation
+## Security
 
-Each sandbox instance runs in an isolated environment:
+| Flag | code-server auth | Password |
+|------|-----------------|----------|
+| (default) | `--auth none` | None |
+| `--secure` | `--auth password` | Auto-generated per-user (24-char token) |
 
-- **File System**: Each instance has its own `/workspace/{workspace-name}` directory
-- **Processes**: Each instance runs a separate code-server process
-- **Network**: Each instance listens on a unique port
-- **State**: Changes in one instance do not affect others
+## Troubleshooting
 
-## Security Considerations
+### Service Worker SSL Error
 
-### Authentication
-
-By default, code-server runs with authentication disabled (`--auth none`). For production use:
-
-1. Use a reverse proxy with authentication (e.g., nginx, Traefik)
-2. Enable code-server authentication with a password
-3. Use HTTPS with proper TLS certificates
-
-### Resource Limits
-
-When running multiple instances, consider:
-
-- **CPU**: Each sandbox consumes CPU resources
-- **Memory**: Each sandbox consumes memory resources
-- **Disk**: Each sandbox uses disk space for the workspace
-- **Network**: Each instance requires a unique port
-
-## Certificate Generation Script
-
-The `generate-certs.py` script helps you generate mkcert certificates for local development. These certificates are automatically injected into containers when HTTPS mode is enabled.
-
-```shell
-# Install mkcert CA
-uv run python examples/vscode-remote/generate-certs.py --install-ca
-
-# Generate wildcard certificate (*.localhost) - recommended for most use cases
-uv run python examples/vscode-remote/generate-certs.py
-
-# Generate per-sandbox certificates (for more granular control)
-uv run python examples/vscode-remote/generate-certs.py --per-sandbox \
-  --sandbox vscode-8443 --sandbox vscode-8444 --sandbox vscode-8445
-
-# Generate certificates for specific sandbox IDs
-uv run python examples/vscode-remote/generate-certs.py --sandbox my-sandbox
+```
+SecurityError: Failed to register a ServiceWorker — An SSL certificate error occurred
 ```
 
-### Certificate File Locations
+**Fix**: Use mkcert CA-trusted certs. Remote clients must download and import the
+CA root from `https://<ip>/ca.crt`.
 
-Certificates are stored in the `certs/` directory by default:
+### Bad Gateway (502)
 
-- `localhost.pem` - Wildcard certificate for `*.localhost`
-- `localhost-key.pem` - Private key for wildcard certificate
-- `{sandbox_id}.pem` - Per-sandbox certificate
-- `{sandbox_id}-key.pem` - Per-sandbox private key
+Caused by `--base-path` on code-server or including upstream path in `proxy_pass`.
+Do NOT use `--base-path` and ensure `proxy_pass` ends with `/` only.
 
-When running with HTTPS enabled, these certificates are automatically injected into each container's `/tmp/` directory and used by code-server.
+### Model Not Found (404)
 
-## References
+The `user.` prefix is required for user-registered models. Kilo Code should send
+`user.gemma-4-31b-it` as the model name, not `gemma-4-31b-it`.
 
-- [code-server (VS Code Web)](https://github.com/coder/code-server)
-- [mkcert - Trusted local TLS certificates](https://github.com/FiloSottile/mkcert)
-- [Original VS Code Example](../vscode/README.md)
-- [OpenSandbox Documentation](../../docs/README.md)
+### Reserved llama.cpp Arguments
+
+Lemonade manages these arguments internally and rejects them in `llamacpp_args`:
+`-ngl`, `--jinja`, `--ctx-size`, `-c`, `-m`, `--port`, `--mmproj*`, `--rerank*`
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SANDBOX_DOMAIN` | Sandbox server address | `localhost:8080` |
+| `SANDBOX_API_KEY` | Sandbox API key | (none) |
+| `SANDBOX_IMAGE` | Docker image | `opensandbox/vscode-remote:latest` |
+| `PYTHON_VERSION` | Python version in sandbox | `3.11` |
+| `LEMONADE_API_KEY` | Lemonade API key (regular) | (none) |
+| `LEMONADE_ADMIN_API_KEY` | Lemonade admin key (elevated) | (none) |
+
+## File Map
+
+| File | Purpose |
+|------|---------|
+| `main.py` | Entry point; CLI; groups; sandbox orchestration; kilo.json injection |
+| `groups.yaml` | Groups and users configuration |
+| `setup.sh` | One-time host prerequisite installation |
+| `nginx_config.py` | Per-port nginx config generation |
+| `ssl_cert.py` | SSL certificate generation (mkcert/openssl) |
+| `lemonade_server.py` | Lemonade server manager (Python CLI) |
+| `setup-lemonade.sh` | All-in-one Lemonade setup (shell, recommended) |
+| `build-amd-mi300x-llama-server.sh` | Build llama.cpp for AMD MI300X (gfx942) |
+| `kilo.json` | Kilo Code config template |
+| `vscode-settings.jsonc` | VS Code settings template |
+| `Dockerfile` | Sandbox image: python:3.12-slim + code-server |
