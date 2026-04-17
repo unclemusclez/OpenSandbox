@@ -63,7 +63,7 @@ sudo journalctl -u lemonade-server -f
 
 # Lemonade Server: pull / configure via CLI
 lemonade pull unsloth/gemma-4-31B-it-GGUF:Q8_K_XL
-lemonade config set llamacpp.backend=rocm host=0.0.0.0
+lemonade config set llamacpp.backend=auto host=0.0.0.0
 
 # Run VS Code instances with Lemonade inference (injects kilo.json into each sandbox)
 python examples/vscode-remote/main.py --groups groups.yaml --external-ip 1.2.3.4 --lemonade kilo.json
@@ -241,13 +241,13 @@ lemonade pull <model>
 - Config file: `/var/lib/lemonade/.cache/lemonade/config.json`
 - API keys stored in `/etc/systemd/system/lemonade-server.service.d/override.conf`
 - Default port: `13305`, default host: `0.0.0.0`
-- Default backend: `rocm` (auto-detected by Lemonade; can be overridden with `--llamacpp-backend`)
-- Custom models: `user_models.json` and `recipe_options.json` in the cache directory
+- Default backend: `auto` (Lemonade auto-detects GPU; can be overridden with `--llamacpp-backend`)
+- Custom models: `user_models.json`, `server_models.json`, and `recipe_options.json` in the cache directory
 
 **Default Model:**
 - Checkpoint: `unsloth/gemma-4-31B-it-GGUF:Q8_K_XL`
 - Short name: `gemma-4-31b-it` (registered as `user.gemma-4-31b-it`; the `user.` prefix is required in API requests)
-- Recipe: `llamacpp` with ROCm backend
+- Recipe: `llamacpp` with auto-detected backend
 
 **Per-User Scaling:**
 When `--groups groups.yaml` is passed, the number of users is counted automatically and
@@ -255,15 +255,19 @@ scales the llama.cpp args in `recipe_options.json`:
 
 | Parameter | Value |
 |-----------|-------|
-| `--ctx-size` | `262144 × num_users` |
+| `ctx_size` | `262144` (per-slot, set in recipe_options) |
 | `-np` | `num_users` |
 | Per-slot `ctx_size` | `262144` |
 
-Full llama.cpp args:
+Lemonade-managed args (reserved, must NOT be in `llamacpp_args`):
+`--ctx-size`, `-c`, `-ngl`, `--gpu-layers`, `--n-gpu-layers`, `--jinja`, `--no-jinja`,
+`--model`, `-m`, `--port`, `--embedding`, `--embeddings`, `--mmproj*`, `--rerank*`
+
+Custom llama.cpp args (safe to override):
 ```
--ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja
---ctx-size <262144 * num_users> --temp 1.0 --top-k 64 --top-p 0.95
---min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1
+-b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0
+--temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0
+--repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1
 -np <num_users>
 ```
 
@@ -271,9 +275,12 @@ Full llama.cpp args:
 ```json
 {
     "gemma-4-31b-it": {
+        "model_name": "gemma-4-31b-it",
         "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q8_K_XL",
         "recipe": "llamacpp",
-        "size": 31.0
+        "suggested": true,
+        "labels": ["custom", "vision"],
+        "mmproj": "mmproj-BF16.gguf"
     }
 }
 ```
@@ -283,8 +290,8 @@ Full llama.cpp args:
 {
     "user.gemma-4-31b-it": {
         "ctx_size": 262144,
-        "llamacpp_backend": "rocm",
-        "llamacpp_args": "-ngl 999 -b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --jinja --ctx-size 1048576 --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1 -np 4"
+        "llamacpp_backend": "auto",
+        "llamacpp_args": "-b 8192 -ub 8192 -to 3600 -ctk q8_0 -ctv q8_0 --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0 --no-webui --threads-http -1 --threads -1 -np 4"
     }
 }
 ```

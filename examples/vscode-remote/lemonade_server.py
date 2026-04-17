@@ -452,7 +452,7 @@ class LemonadeServerManager:
             model: HuggingFace checkpoint (org/repo:variant format).
             model_name: Short model name for model configs (no user. prefix).
             num_users: Number of parallel users; scales ctx-size and -np.
-            llamacpp_backend: llama.cpp backend (auto, rocm, vulkan, cpu).
+            llamacpp_backend: llama.cpp backend (auto, vulkan, cpu).
             mmproj: Multimodal projection model filename (e.g. "mmproj-BF16.gguf").
         """
         user_models_path = self.config_dir / "user_models.json"
@@ -498,12 +498,9 @@ class LemonadeServerManager:
 
         total_ctx = PER_USER_CTX * num_users
         llamacpp_args = (
-            f"-ngl 999 "
             f"-b 8192 -ub 8192 "
             f"-to 3600 "
             f"-ctk q8_0 -ctv q8_0 "
-            f"--jinja "
-            f"--ctx-size {total_ctx} "
             f"--temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 "
             f"--repeat-penalty 1.0 "
             f"--no-webui "
@@ -788,7 +785,7 @@ Examples:
         "--llamacpp-backend",
         type=str,
         default="auto",
-        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: auto)",
+        help="llama.cpp backend: auto, vulkan, cpu (default: auto)",
     )
     config_parser.add_argument(
         "--prefer-system",
@@ -908,7 +905,7 @@ Examples:
         "--llamacpp-backend",
         type=str,
         default="auto",
-        help="llama.cpp backend: auto, rocm, vulkan, cpu (default: auto)",
+        help="llama.cpp backend: auto, vulkan, cpu (default: auto)",
     )
     run_parser.add_argument(
         "--prefer-system",

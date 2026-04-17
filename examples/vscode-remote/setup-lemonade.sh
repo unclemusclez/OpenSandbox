@@ -53,7 +53,7 @@ Options:
   --num-users N         Override number of parallel users (default: 1, or auto from --groups)
   --port PORT           Server port (default: ${PORT})
   --host HOST           Bind address (default: ${HOST})
-  --backend BACKEND     llama.cpp backend: auto, rocm, vulkan, cpu (default: ${BACKEND})
+  --backend BACKEND     llama.cpp backend: auto, vulkan, cpu (default: ${BACKEND})
   --ctx-size SIZE       Per-user context size (default: ${CTX_SIZE})
   --model MODEL         HuggingFace checkpoint (default: ${MODEL})
   --model-name NAME     Short model name for user_models.json (default: ${MODEL_NAME})
