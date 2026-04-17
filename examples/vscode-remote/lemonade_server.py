@@ -446,16 +446,17 @@ class LemonadeServerManager:
         llamacpp_backend: str = "auto",
         mmproj: Optional[str] = None,
     ) -> None:
-        """Write user_models.json and recipe_options.json for a custom model.
+        """Write user_models.json, server_models.json, and recipe_options.json.
 
         Args:
             model: HuggingFace checkpoint (org/repo:variant format).
-            model_name: Short model name for user_models.json key (no user. prefix).
+            model_name: Short model name for model configs (no user. prefix).
             num_users: Number of parallel users; scales ctx-size and -np.
             llamacpp_backend: llama.cpp backend (auto, rocm, vulkan, cpu).
             mmproj: Multimodal projection model filename (e.g. "mmproj-BF16.gguf").
         """
         user_models_path = self.config_dir / "user_models.json"
+        server_models_path = self.config_dir / "server_models.json"
         recipe_options_path = self.config_dir / "recipe_options.json"
 
         existing_models = _sudo_read_json(user_models_path) or {}
@@ -471,16 +472,29 @@ class LemonadeServerManager:
             del existing_models[auto_name_key]
             print(f"[Lemonade] Removed auto-generated entry: {auto_name_key}")
 
+        labels = ["custom"]
+        if mmproj:
+            labels.append("vision")
+
         model_entry: dict = {
+            "model_name": model_name,
             "checkpoint": model,
             "recipe": "llamacpp",
-            "size": 31.0,
+            "suggested": True,
+            "labels": labels,
         }
         if mmproj:
             model_entry["mmproj"] = mmproj
         existing_models[model_name] = model_entry
         _sudo_write_json(user_models_path, existing_models)
         print(f"[Lemonade] user_models.json updated with {model_name}")
+
+        server_models = _sudo_read_json(server_models_path) or {}
+        if auto_name_key in server_models and auto_name_key != model_name:
+            del server_models[auto_name_key]
+        server_models[model_name] = model_entry
+        _sudo_write_json(server_models_path, server_models)
+        print(f"[Lemonade] server_models.json updated with {model_name}")
 
         total_ctx = PER_USER_CTX * num_users
         llamacpp_args = (
