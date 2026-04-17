@@ -4,6 +4,10 @@ Run multiple VS Code sandbox instances concurrently with nginx SSL reverse proxy
 groups-based user management, persistent workspaces, and optional local LLM inference
 via Lemonade Server.
 
+## Video Guide
+
+https://youtu.be/YptAQQf_4dg
+
 ## Quick Start
 
 ### 1. One-time Setup
