@@ -189,14 +189,16 @@ else
     exit 1
 fi
 
-echo "[Lemonade] Pulling model: ${MODEL}"
+PREFIXED_NAME="user.${MODEL_NAME}"
+
+echo "[Lemonade] Pulling model: ${PREFIXED_NAME}"
 PULL_ENV=""
 if [[ -n "${ADMIN_KEY}" ]]; then
     PULL_ENV="LEMONADE_ADMIN_API_KEY=${ADMIN_KEY} LEMONADE_API_KEY=${ADMIN_KEY}"
 elif [[ -n "${API_KEY}" ]]; then
     PULL_ENV="LEMONADE_API_KEY=${API_KEY}"
 fi
-eval ${PULL_ENV} lemonade pull "${MODEL}"
+eval ${PULL_ENV} lemonade pull "${PREFIXED_NAME}"
 
 echo "[Lemonade] Loading model via API..."
 
@@ -204,8 +206,6 @@ LOCAL_HOST="localhost"
 if [[ "${HOST}" != "0.0.0.0" ]]; then
     LOCAL_HOST="${HOST}"
 fi
-
-PREFIXED_NAME="user.${MODEL_NAME}"
 
 CURL_ARGS=(-sf -X POST "http://${LOCAL_HOST}:${PORT}/api/v1/load"
     -H "Content-Type: application/json")

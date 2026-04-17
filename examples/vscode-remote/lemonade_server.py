@@ -672,7 +672,7 @@ async def cmd_run(
         sys.exit(1)
 
     prefixed_model = f"user.{model_name}"
-    manager.pull_model(model)
+    manager.pull_model(prefixed_model)
 
     await asyncio.sleep(2)
     manager.load_model(prefixed_model)
