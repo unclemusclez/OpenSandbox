@@ -1,6 +1,3 @@
-[submodule "examples/thon"]
-	path = examples/thon
-	url = https://github.com/unclemusclez/thon.git
 [submodule "examples/vscode-remote"]
 	path = examples/vscode-remote
 	url = https://github.com/unclemusclez/thon.git
