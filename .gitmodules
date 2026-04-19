@@ -1,0 +1,3 @@
+[submodule "examples/thon"]
+	path = examples/thon
+	url = https://github.com/unclemusclez/thon.git
