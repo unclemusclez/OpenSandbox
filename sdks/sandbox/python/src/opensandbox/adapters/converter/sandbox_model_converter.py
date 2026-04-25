@@ -109,7 +109,14 @@ class SandboxModelConverter:
 
         api_pvc = UNSET
         if volume.pvc is not None:
-            api_pvc = ApiPVC(claim_name=volume.pvc.claim_name)
+            api_pvc = ApiPVC(
+                claim_name=volume.pvc.claim_name,
+                create_if_not_exists=volume.pvc.create_if_not_exists,
+                delete_on_sandbox_termination=volume.pvc.delete_on_sandbox_termination,
+                storage_class=volume.pvc.storage_class,
+                storage=volume.pvc.storage,
+                access_modes=volume.pvc.access_modes,
+            )
 
         api_ossfs = UNSET
         if volume.ossfs is not None and volume.ossfs.access_key_id is not None and volume.ossfs.access_key_secret is not None:
@@ -148,6 +155,7 @@ class SandboxModelConverter:
         network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
         volumes: list[Volume] | None,
+        secure_access: bool = False,
     ) -> CreateSandboxRequest:
         """Convert domain parameters to API CreateSandboxRequest."""
         from opensandbox.api.lifecycle.models.create_sandbox_request import (
@@ -253,8 +261,12 @@ class SandboxModelConverter:
             network_policy=api_network_policy,
             extensions=api_extensions,
             volumes=api_volumes,
+            secure_access=secure_access,
         )
-        if timeout is not None:
+        if timeout is None:
+            # Preserve an explicit manual-cleanup request as JSON null.
+            request.timeout = None
+        else:
             request.timeout = int(timeout.total_seconds())
         return request
 

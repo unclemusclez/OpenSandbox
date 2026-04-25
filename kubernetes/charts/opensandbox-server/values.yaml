@@ -9,12 +9,15 @@ fullnameOverride: "opensandbox-server"
 # -- Override the namespace (default: opensandbox-system)
 namespaceOverride: ""
 
+# -- Image pull secrets for the server deployment. Each entry: {name: <secret-name>}.
+imagePullSecrets: []
+
 # Server configuration
 server:
   # -- Server image configuration
   image:
     repository: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server
-    tag: "v0.1.10"
+    tag: "v0.1.12"
 
   # -- Number of server replicas
   replicaCount: 2
@@ -64,7 +67,7 @@ configToml: |
 
   [runtime]
   type = "kubernetes"
-  execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.12"
+  execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.13"
 
   [kubernetes]
   kubeconfig_path = ""
@@ -76,6 +79,6 @@ configToml: |
   batchsandbox_template_file = "/etc/opensandbox/example.batchsandbox-template.yaml"
   
   [egress]
-  image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:v1.0.7"
+  image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:v1.0.8"
   mode = "dns+nft"
 

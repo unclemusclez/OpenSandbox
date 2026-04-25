@@ -45,6 +45,7 @@ echo "-------- GO E2E test logs for execd --------" > /tmp/opensandbox-e2e/logs/
 
 # setup server
 cd server
+export OPENSANDBOX_INSECURE_SERVER=YES
 uv sync && uv run python -m opensandbox_server.main > server.log 2>&1 &
 cd ..
 
@@ -54,4 +55,4 @@ sleep 10
 # run Go e2e tests
 cd tests/go
 mkdir -p reports
-go test -v -count=1 -timeout 5m ./... 2>&1 | tee reports/test-output.txt
+go test -v -count=1 -timeout 30m ./... 2>&1 | tee reports/test-output.txt

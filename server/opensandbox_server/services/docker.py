@@ -40,6 +40,7 @@ from uuid import uuid4
 
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound as DockerNotFound
+from docker.types import DeviceRequest
 from fastapi import HTTPException, status
 
 from opensandbox_server.extensions import (
@@ -63,7 +64,11 @@ from opensandbox_server.api.schema import (
 )
 from opensandbox_server.config import AppConfig, get_config
 from opensandbox_server.services.docker_diagnostics import DockerDiagnosticsMixin
-from opensandbox_server.services.docker_port_allocator import allocate_port_bindings
+from opensandbox_server.services.docker_port_allocator import (
+    allocate_port_bindings,
+    normalize_container_port_spec,
+    normalize_port_bindings,
+)
 from opensandbox_server.services.docker_windows_profile import (
     apply_windows_runtime_host_config_defaults,
     fetch_execd_install_bat,
@@ -87,6 +92,7 @@ from opensandbox_server.services.constants import (
     SANDBOX_EXPIRES_AT_LABEL,
     SANDBOX_HTTP_PORT_LABEL,
     SANDBOX_ID_LABEL,
+    SANDBOX_MANAGED_VOLUMES_LABEL,
     SANDBOX_MANUAL_CLEANUP_LABEL,
     SANDBOX_OSSFS_MOUNTS_LABEL,
     SANDBOX_PLATFORM_ARCH_LABEL,
@@ -100,6 +106,7 @@ from opensandbox_server.services.endpoint_auth import (
 )
 from opensandbox_server.services.helpers import (
     matches_filter,
+    parse_gpu_request,
     parse_memory_limit,
     parse_nano_cpus,
     parse_timestamp,
@@ -843,7 +850,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             [
                 "#!/bin/sh",
                 "set -e",
-                f"{execd_binary} >/tmp/execd.log 2>&1 &",
+                f"  {execd_binary} >/tmp/execd.log 2>&1 &",
                 'exec "$@"',
                 "",
             ]
@@ -910,11 +917,14 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             request.timeout,
             self.app_config.server.max_sandbox_timeout_seconds,
         )
+        self._ensure_secure_access_support(request)
         self._ensure_network_policy_support(request)
         self._validate_network_exists()
-        pvc_inspect_cache = self._validate_volumes(request)
+        pvc_inspect_cache, auto_created_volumes = self._validate_volumes(request)
         sandbox_id, created_at, expires_at = self._prepare_creation_context(request)
-        return self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
+        return self._provision_sandbox(
+            sandbox_id, request, created_at, expires_at, pvc_inspect_cache, auto_created_volumes,
+        )
 
     def _async_provision_worker(
         self,
@@ -1154,10 +1164,15 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         created_at: datetime,
         expires_at: Optional[datetime],
         pvc_inspect_cache: Optional[dict[str, dict]] = None,
+        auto_created_volumes: Optional[list[str]] = None,
     ) -> CreateSandboxResponse:
         labels, environment = self._build_labels_and_env(sandbox_id, request, expires_at)
+        if auto_created_volumes:
+            labels[SANDBOX_MANAGED_VOLUMES_LABEL] = json.dumps(
+                auto_created_volumes, separators=(",", ":"),
+            )
         image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
-        mem_limit, nano_cpus = self._resolve_resource_limits(request)
+        mem_limit, nano_cpus, gpu_count = self._resolve_resource_limits(request)
         egress_token: Optional[str] = None
         requested_windows_profile = is_windows_platform(request.platform)
 
@@ -1178,9 +1193,12 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             # For dockur/windows profile, resourceLimits are translated to
             # guest envs (RAM_SIZE/CPU_CORES/DISK_SIZE). Avoid applying
             # container cgroup memory/cpu limits to the outer Linux container,
-            # which can OOM-kill QEMU during installation/runtime.
+            # which can OOM-kill QEMU during installation/runtime. GPU
+            # passthrough is likewise suppressed: the Windows guest runs inside
+            # QEMU and would not see GPUs exposed to the outer container.
             effective_mem_limit = None if requested_windows_profile else mem_limit
             effective_nano_cpus = None if requested_windows_profile else nano_cpus
+            effective_gpu_count = None if requested_windows_profile else gpu_count
 
             # Build volume bind mounts from request volumes.
             # pvc_inspect_cache carries Docker volume inspect data from the
@@ -1188,26 +1206,41 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             volume_binds = self._build_volume_binds(request.volumes, pvc_inspect_cache)
 
             host_config_kwargs: Dict[str, Any]
-            exposed_ports: Optional[list[str]] = None
+            exposed_ports: Optional[list[str]] = ["44772", "8080"]
+            if requested_windows_profile:
+                # dockur/windows exposes RDP and noVNC/web UI on these ports.
+                # https://github.com/dockur/windows/blob/master/Dockerfile
+                exposed_ports.extend(["3389/tcp", "3389/udp", "8006/tcp"])
+            container_exposed_ports: Optional[list[str]] = exposed_ports
 
             if request.network_policy:
                 egress_token = generate_egress_token()
                 labels[SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] = egress_token
-                sidecar_port_bindings = allocate_port_bindings(["44772", "8080"])
+                sidecar_port_bindings = allocate_port_bindings(exposed_ports)
                 host_execd_port = sidecar_port_bindings["44772"][1]
                 host_http_port = sidecar_port_bindings["8080"][1]
+                extra_sidecar_port_bindings = {
+                    port: binding
+                    for port, binding in sidecar_port_bindings.items()
+                    if port not in {"44772", "8080"}
+                }
                 sidecar_container = self._start_egress_sidecar(
                     sandbox_id=sandbox_id,
                     network_policy=request.network_policy,
                     egress_token=egress_token,
                     host_execd_port=host_execd_port,
                     host_http_port=host_http_port,
+                    extra_port_bindings=extra_sidecar_port_bindings,
                 )
                 labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                 labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
                 host_config_kwargs = self._base_host_config_kwargs(
-                    effective_mem_limit, effective_nano_cpus, f"container:{sidecar_container.id}"
+                    effective_mem_limit, effective_nano_cpus, f"container:{sidecar_container.id}",
+                    gpu_count=effective_gpu_count,
                 )
+                # Container network namespace is shared with sidecar. Docker rejects
+                # exposing ports on the main container in "container:<id>" mode.
+                container_exposed_ports = None
                 # Drop NET_ADMIN for the main container; only the sidecar should keep it
                 cap_drop = set(host_config_kwargs.get("cap_drop") or [])
                 cap_drop.add("NET_ADMIN")
@@ -1215,20 +1248,18 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     host_config_kwargs["cap_drop"] = list(cap_drop)
             else:
                 host_config_kwargs = self._base_host_config_kwargs(
-                    effective_mem_limit, effective_nano_cpus, self.network_mode
+                    effective_mem_limit, effective_nano_cpus, self.network_mode,
+                    gpu_count=effective_gpu_count,
                 )
                 if self.network_mode != HOST_NETWORK_MODE:
-                    exposed_ports = ["44772", "8080"]
-                    if requested_windows_profile:
-                        # dockur/windows exposes RDP and noVNC/web UI on these ports.
-                        # https://github.com/dockur/windows/blob/master/Dockerfile
-                        exposed_ports.extend(["3389/tcp", "3389/udp", "8006/tcp"])
                     port_bindings = allocate_port_bindings(exposed_ports)
                     host_execd_port = port_bindings["44772"][1]
                     host_http_port = port_bindings["8080"][1]
-                    host_config_kwargs["port_bindings"] = port_bindings
+                    host_config_kwargs["port_bindings"] = normalize_port_bindings(port_bindings)
                     labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                     labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
+                else:
+                    exposed_ports = None
 
             # Inject volume bind mounts into Docker host config
             if volume_binds:
@@ -1251,7 +1282,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 labels,
                 environment,
                 host_config_kwargs,
-                exposed_ports,
+                container_exposed_ports,
                 request.platform,
             )
         except Exception:
@@ -1265,6 +1296,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                         cleanup_exc,
                     )
             self._release_ossfs_mounts(ossfs_mount_keys)
+            self._cleanup_managed_volumes(sandbox_id, auto_created_volumes or [])
             raise
 
         status_info = SandboxStatus(
@@ -1357,7 +1389,25 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         # Common validation: egress.image must be configured
         ensure_egress_configured(request.network_policy, self.app_config.egress)
 
-    def _validate_volumes(self, request: CreateSandboxRequest) -> dict[str, dict]:
+    def _ensure_secure_access_support(self, request: CreateSandboxRequest) -> None:
+        """Validate that secure access can be honored under the current Docker runtime."""
+        if not request.secure_access:
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_PARAMETER,
+                "message": (
+                    "secureAccess is not supported when runtime.type='docker'. "
+                    "Use the Kubernetes runtime to create secured sandboxes."
+                ),
+            },
+        )
+
+    def _validate_volumes(
+        self, request: CreateSandboxRequest
+    ) -> tuple[dict[str, dict], list[str]]:
         """
         Validate volume definitions for Docker runtime.
 
@@ -1369,32 +1419,46 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             request: Sandbox creation request.
 
         Returns:
-            A dict mapping PVC volume names (``pvc.claimName``) to their
-            ``docker volume inspect`` results.  Empty when there are no PVC
-            volumes.  This data is passed to ``_build_volume_binds`` so that
-            bind generation does not need a second API call.
+            A tuple of:
+            - A dict mapping PVC volume names (``pvc.claimName``) to their
+              ``docker volume inspect`` results.  Empty when there are no PVC
+              volumes.  This data is passed to ``_build_volume_binds`` so that
+              bind generation does not need a second API call.
+            - A list of Docker named volume names that were auto-created during
+              validation (empty when ``createIfNotExists`` is false or all
+              volumes already existed).
 
         Raises:
             HTTPException: When any validation fails.
         """
         if not request.volumes:
-            return {}
+            return {}, []
 
         # Shared validation: names, mount paths, sub paths, backend count, host path allowlist
-        allowed_prefixes = self.app_config.storage.allowed_host_paths or None
+        allowed_prefixes = self.app_config.storage.allowed_host_paths
         ensure_volumes_valid(request.volumes, allowed_host_prefixes=allowed_prefixes)
 
         pvc_inspect_cache: dict[str, dict] = {}
-        for volume in request.volumes:
-            if volume.host is not None:
-                self._validate_host_volume(volume, allowed_prefixes)
-            elif volume.pvc is not None:
-                vol_info = self._validate_pvc_volume(volume)
-                pvc_inspect_cache[volume.pvc.claim_name] = vol_info
-            elif volume.ossfs is not None:
-                self._validate_ossfs_volume(volume)
+        auto_created_volumes: list[str] = []
+        try:
+            for volume in request.volumes:
+                if volume.host is not None:
+                    self._validate_host_volume(volume, allowed_prefixes)
+                elif volume.pvc is not None:
+                    vol_info, was_created = self._validate_pvc_volume(volume)
+                    pvc_inspect_cache[volume.pvc.claim_name] = vol_info
+                    if was_created and volume.pvc.delete_on_sandbox_termination:
+                        auto_created_volumes.append(volume.pvc.claim_name)
+                elif volume.ossfs is not None:
+                    self._validate_ossfs_volume(volume)
+        except Exception:
+            # If any subsequent volume validation fails, remove volumes we
+            # already auto-created so they don't leak — delete_sandbox will
+            # never run for a sandbox that was never provisioned.
+            self._cleanup_managed_volumes("<pre-sandbox>", auto_created_volumes)
+            raise
 
-        return pvc_inspect_cache
+        return pvc_inspect_cache, auto_created_volumes
 
     @staticmethod
     def _validate_host_volume(volume, allowed_prefixes: Optional[list[str]]) -> None:
@@ -1442,7 +1506,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 },
             )
 
-    def _validate_pvc_volume(self, volume) -> dict:
+    def _validate_pvc_volume(self, volume) -> tuple[dict, bool]:
         """
         Docker-specific validation for PVC (named volume) backend.
 
@@ -1460,27 +1524,52 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             volume: Volume with pvc backend.
 
         Returns:
-            The ``docker volume inspect`` result dict for the named volume.
+            A tuple of:
+            - The ``docker volume inspect`` result dict for the named volume.
+            - Whether the volume was auto-created by this call.
 
         Raises:
             HTTPException: When the named volume does not exist, inspection
                 fails, or subPath constraints are violated.
         """
         volume_name = volume.pvc.claim_name
+        auto_created = False
         try:
             vol_info = self.docker_client.api.inspect_volume(volume_name)
         except DockerNotFound:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "code": SandboxErrorCodes.PVC_VOLUME_NOT_FOUND,
-                    "message": (
-                        f"Volume '{volume.name}': Docker named volume '{volume_name}' "
-                        "does not exist. Named volumes must be created before sandbox "
-                        "creation (e.g., 'docker volume create <name>')."
-                    ),
-                },
-            )
+            if volume.pvc.create_if_not_exists:
+                # Auto-create the Docker named volume
+                try:
+                    self.docker_client.api.create_volume(
+                        name=volume_name,
+                        labels={SANDBOX_MANAGED_VOLUMES_LABEL: "server"},
+                    )
+                    logger.info("Auto-created Docker named volume '%s'", volume_name)
+                    vol_info = self.docker_client.api.inspect_volume(volume_name)
+                    auto_created = True
+                except DockerException as create_exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": SandboxErrorCodes.PVC_VOLUME_INSPECT_FAILED,
+                            "message": (
+                                f"Volume '{volume.name}': failed to auto-create Docker "
+                                f"named volume '{volume_name}': {create_exc}"
+                            ),
+                        },
+                    ) from create_exc
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.PVC_VOLUME_NOT_FOUND,
+                        "message": (
+                            f"Volume '{volume.name}': Docker named volume '{volume_name}' "
+                            "does not exist. Named volumes must be created before sandbox "
+                            "creation (e.g., 'docker volume create <name>')."
+                        ),
+                    },
+                )
         except DockerException as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1600,7 +1689,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             # false-negative rejections.  If the subPath does not actually
             # exist, Docker will report the error at container creation time.
 
-        return vol_info
+        return vol_info, auto_created
 
     def _build_volume_binds(
         self,
@@ -1786,6 +1875,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             mount_keys: list[str] = json.loads(mount_keys_raw)
         except (TypeError, json.JSONDecodeError):
             mount_keys = []
+        managed_volumes_raw = labels.get(SANDBOX_MANAGED_VOLUMES_LABEL, "[]")
+        try:
+            managed_volumes: list[str] = json.loads(managed_volumes_raw)
+        except (TypeError, json.JSONDecodeError):
+            managed_volumes = []
         try:
             try:
                 with self._docker_operation("kill sandbox container", sandbox_id):
@@ -1809,6 +1903,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             self._cleanup_egress_sidecar(sandbox_id)
             self._cleanup_windows_oem_volume(sandbox_id, labels)
             self._release_ossfs_mounts(mount_keys)
+            self._cleanup_managed_volumes(sandbox_id, managed_volumes)
 
     def _cleanup_windows_oem_volume(
         self,
@@ -2010,10 +2105,8 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         if self.network_mode == HOST_NETWORK_MODE:
             endpoint = Endpoint(endpoint=f"{public_host}:{port}")
             container = self._get_container_by_sandbox_id(sandbox_id)
-            self._attach_egress_auth_headers(
-                endpoint,
-                (container.attrs.get("Config", {}).get("Labels") or {}),
-            )
+            labels = container.attrs.get("Config", {}).get("Labels") or {}
+            self._attach_egress_auth_headers(endpoint, labels)
             return endpoint
 
         # non-host mode (bridge / user-defined network)
@@ -2045,7 +2138,9 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                         "message": "Missing host port mapping for container port 8080.",
                     },
                 )
-            return Endpoint(endpoint=f"{public_host}:{http_host_port}")
+            endpoint = Endpoint(endpoint=f"{public_host}:{http_host_port}")
+            self._attach_egress_auth_headers(endpoint, labels)
+            return endpoint
 
         if execd_host_port is None:
             raise HTTPException(
@@ -2162,17 +2257,19 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
     def _resolve_resource_limits(
         self, request: CreateSandboxRequest
-    ) -> tuple[Optional[int], Optional[int]]:
+    ) -> tuple[Optional[int], Optional[int], Optional[int]]:
         resource_limits = request.resource_limits.root or {}
         mem_limit = parse_memory_limit(resource_limits.get("memory"))
         nano_cpus = parse_nano_cpus(resource_limits.get("cpu"))
-        return mem_limit, nano_cpus
+        gpu_count = parse_gpu_request(resource_limits.get("gpu"))
+        return mem_limit, nano_cpus, gpu_count
 
     def _base_host_config_kwargs(
         self,
         mem_limit: Optional[int],
         nano_cpus: Optional[int],
         network_mode: str,
+        gpu_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         host_config_kwargs: Dict[str, Any] = {"network_mode": network_mode}
         security_opts: list[str] = []
@@ -2193,6 +2290,13 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             host_config_kwargs["mem_limit"] = mem_limit
         if nano_cpus:
             host_config_kwargs["nano_cpus"] = nano_cpus
+        if gpu_count:
+            # Honors host toolchains such as nvidia-container-toolkit. The Docker
+            # Engine returns a clear error at container create time if the host
+            # cannot satisfy the request, so failure is surfaced rather than silent.
+            host_config_kwargs["device_requests"] = [
+                DeviceRequest(count=gpu_count, capabilities=[["gpu"]])
+            ]
         # Inject secure runtime into host_config
         if self.docker_runtime:
             logger.info(
@@ -2201,6 +2305,36 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             )
             host_config_kwargs["runtime"] = self.docker_runtime
         return host_config_kwargs
+
+    def _cleanup_managed_volumes(self, sandbox_id: str, volume_names: list[str]) -> None:
+        """
+        Remove Docker named volumes that were auto-created for this sandbox.
+
+        Only volumes whose ``opensandbox.io/volume-managed-by`` label equals
+        ``"server"`` are removed.  Pre-existing volumes are never touched.
+        Errors are logged but do not propagate — volume cleanup is best-effort.
+        """
+        for name in volume_names:
+            try:
+                vol_info = self.docker_client.api.inspect_volume(name)
+                vol_labels = vol_info.get("Labels") or {}
+                if vol_labels.get(SANDBOX_MANAGED_VOLUMES_LABEL) != "server":
+                    logger.debug(
+                        "sandbox=%s | volume '%s' not managed by server, skipping removal",
+                        sandbox_id, name,
+                    )
+                    continue
+                self.docker_client.api.remove_volume(name)
+                logger.info("sandbox=%s | removed managed volume '%s'", sandbox_id, name)
+            except DockerNotFound:
+                logger.debug(
+                    "sandbox=%s | managed volume '%s' already removed", sandbox_id, name,
+                )
+            except DockerException as exc:
+                logger.warning(
+                    "sandbox=%s | failed to remove managed volume '%s': %s",
+                    sandbox_id, name, exc,
+                )
 
     def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
         """
@@ -2233,6 +2367,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         egress_token: str,
         host_execd_port: int,
         host_http_port: int,
+        extra_port_bindings: Optional[dict[str, tuple[str, int]]] = None,
     ):
         sidecar_name = f"sandbox-egress-{sandbox_id}"
         sidecar_labels = {
@@ -2254,13 +2389,17 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             f"{OPENSANDBOX_EGRESS_TOKEN}={egress_token}",
         ]
 
+        sidecar_port_bindings: dict[str, tuple[str, int]] = {
+            "44772": ("0.0.0.0", host_execd_port),
+            "8080": ("0.0.0.0", host_http_port),
+        }
+        if extra_port_bindings:
+            sidecar_port_bindings.update(extra_port_bindings)
+
         sidecar_host_config_kwargs: dict[str, Any] = {
             "network_mode": BRIDGE_NETWORK_MODE,
             "cap_add": ["NET_ADMIN"],
-            "port_bindings": {
-                "44772": ("0.0.0.0", host_execd_port),
-                "8080": ("0.0.0.0", host_http_port),
-            },
+            "port_bindings": normalize_port_bindings(sidecar_port_bindings),
         }
         if self.app_config.egress.disable_ipv6:
             # Optional: disable IPv6 in the shared namespace when egress.disable_ipv6 is set.
@@ -2285,7 +2424,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     labels=sidecar_labels,
                     environment=sidecar_env,
                     # Expose the ports that have host bindings so Docker publishes them in bridge mode.
-                    ports=["44772", "8080"],
+                    ports=[normalize_container_port_spec(p) for p in sidecar_port_bindings.keys()],
                 )
             sidecar_container_id = sidecar_resp.get("Id")
             if not sidecar_container_id:
@@ -2357,7 +2496,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 container_kwargs = {
                     "image": image_uri,
                     "command": bootstrap_command,
-                    "ports": exposed_ports,
+                    "ports": (
+                        [normalize_container_port_spec(p) for p in exposed_ports]
+                        if exposed_ports
+                        else None
+                    ),
                     "name": f"sandbox-{sandbox_id}",
                     "environment": environment,
                     "labels": labels,

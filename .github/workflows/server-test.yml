@@ -4,8 +4,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'server/opensandbox_server/**'
-      - 'server/tests/**'
+      - 'server/**'
 
 permissions:
   contents: read
@@ -49,6 +48,8 @@ jobs:
       matrix:
         network: [host, bridge]
     runs-on: ubuntu-latest
+    env:
+      OPENSANDBOX_INSECURE_SERVER: YES
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

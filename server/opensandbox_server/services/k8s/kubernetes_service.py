@@ -27,7 +27,10 @@ from typing import Optional, Dict, Any
 
 from fastapi import HTTPException, status
 
-from opensandbox_server.extensions import apply_access_renew_extend_seconds_to_mapping
+from opensandbox_server.extensions import (
+    apply_access_renew_extend_seconds_to_mapping,
+    apply_extensions_to_annotations,
+)
 from opensandbox_server.extensions.keys import ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
@@ -40,17 +43,17 @@ from opensandbox_server.api.schema import (
     Sandbox,
     SandboxStatus,
 )
-from opensandbox_server.config import AppConfig, get_config
+from opensandbox_server.config import AppConfig, INGRESS_MODE_GATEWAY, get_config
 from opensandbox_server.services.constants import (
     SANDBOX_ID_LABEL,
     SandboxErrorCodes,
 )
-from opensandbox_server.services.endpoint_auth import generate_egress_token
+from opensandbox_server.services.endpoint_auth import generate_egress_token, generate_secure_access_token
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.k8s.create_helpers import _build_create_workload_context
 from opensandbox_server.services.k8s.error_helpers import _build_k8s_api_error
 from opensandbox_server.services.k8s.k8s_diagnostics import K8sDiagnosticsMixin
-from opensandbox_server.services.k8s.endpoint_resolver import _attach_egress_auth_headers
+from opensandbox_server.services.k8s.endpoint_resolver import _attach_egress_auth_headers, _attach_secure_access_headers
 from opensandbox_server.services.k8s.list_helpers import _build_list_sandboxes_response
 from opensandbox_server.services.k8s.status_helpers import (
     _is_unschedulable_status,
@@ -268,10 +271,120 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             },
         )
 
+    def _ensure_secure_access_support(self, request: CreateSandboxRequest) -> None:
+        """Validate that secure access can be enforced for the configured exposure mode."""
+        if not request.secure_access:
+            return
+        if self.ingress_config and self.ingress_config.mode == INGRESS_MODE_GATEWAY:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_PARAMETER,
+                "message": (
+                    "secureAccess is currently supported only for Kubernetes sandboxes exposed "
+                    "through ingress.mode='gateway'. Configure ingress gateway mode or disable secureAccess."
+                ),
+            },
+        )
+
+    def _ensure_pvc_volumes(self, volumes: list) -> None:
+        """
+        Ensure that PVC volumes exist before creating the workload.
+
+        For each volume with a ``pvc`` backend, check whether the
+        PersistentVolumeClaim already exists in the target namespace.
+        If not, create it using the provisioning hints from the PVC model.
+
+        Degrades gracefully: if the service account lacks RBAC permissions
+        for PVC operations (403), the check is skipped and volume resolution
+        is left to the kubelet at pod scheduling time.
+        """
+        from kubernetes.client import V1PersistentVolumeClaim, V1ObjectMeta
+        from kubernetes.client import ApiException
+
+        default_size = self.app_config.storage.volume_default_size
+
+        seen_claims: set[str] = set()
+        for vol in volumes:
+            if vol.pvc is None or not vol.pvc.create_if_not_exists:
+                continue
+            claim_name = vol.pvc.claim_name
+            if claim_name in seen_claims:
+                continue
+            seen_claims.add(claim_name)
+
+            try:
+                existing = self.k8s_client.get_pvc(self.namespace, claim_name)
+            except ApiException as e:
+                if e.status == 403:
+                    logger.warning(
+                        f"No RBAC permission to read PVC '{claim_name}', skipping auto-create. "
+                        "Grant 'get' and 'create' on 'persistentvolumeclaims' to enable."
+                    )
+                    return  # Skip all remaining PVCs — same SA, same permissions
+                raise
+            if existing is not None:
+                logger.debug(f"PVC '{claim_name}' already exists in namespace '{self.namespace}'")
+                continue
+
+            storage = vol.pvc.storage or default_size
+            access_modes = vol.pvc.access_modes or ["ReadWriteOnce"]
+            storage_class = vol.pvc.storage_class  # None = cluster default
+
+            pvc_body = V1PersistentVolumeClaim(
+                metadata=V1ObjectMeta(
+                    name=claim_name,
+                    namespace=self.namespace,
+                ),
+                spec={
+                    "accessModes": access_modes,
+                    "resources": {"requests": {"storage": storage}},
+                },
+            )
+            if storage_class is not None:
+                pvc_body.spec["storageClassName"] = storage_class
+
+            try:
+                self.k8s_client.create_pvc(self.namespace, pvc_body)
+                logger.info(
+                    f"Auto-created PVC '{claim_name}' (size={storage}, class={storage_class or '<default>'}) "
+                    f"in namespace '{self.namespace}'"
+                )
+            except ApiException as e:
+                if e.status == 409:
+                    # Race condition: another request created it between our check and create
+                    logger.info(f"PVC '{claim_name}' was created concurrently, proceeding")
+                elif e.status == 403:
+                    logger.warning(
+                        f"No RBAC permission to create PVC '{claim_name}', skipping. "
+                        "The PVC must be pre-created or RBAC must be updated."
+                    )
+                elif e.status in (400, 422):
+                    # Invalid PVC spec from user-provided hints
+                    # (e.g. accessModes, storage). These are client errors,
+                    # not retryable server faults.
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": SandboxErrorCodes.INVALID_PARAMETER,
+                            "message": f"Invalid PVC spec for '{claim_name}': {e.reason}",
+                        },
+                    ) from e
+                else:
+                    logger.error(f"Failed to create PVC '{claim_name}': {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": SandboxErrorCodes.INTERNAL_ERROR,
+                            "message": f"Failed to auto-create PVC '{claim_name}': {e.reason}",
+                        },
+                    ) from e
+
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
-        
+
         Wait for the Pod to be Running and have an IP address before returning.
         
         Args:
@@ -290,6 +403,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             request.timeout,
             self.app_config.server.max_sandbox_timeout_seconds,
         )
+        self._ensure_secure_access_support(request)
         self._ensure_network_policy_support(request)
         self._ensure_image_auth_support(request)
         
@@ -302,16 +416,24 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             sandbox_id=sandbox_id,
             created_at=created_at,
             egress_token_factory=generate_egress_token,
+            secure_access_token_factory=generate_secure_access_token,
         )
         
         try:
             apply_access_renew_extend_seconds_to_mapping(context.annotations, request.extensions)
+            apply_extensions_to_annotations(context.annotations, request.extensions)
 
             ensure_volumes_valid(
                 request.volumes,
-                self.app_config.storage.allowed_host_paths or None,
+                self.app_config.storage.allowed_host_paths,
             )
             
+
+            # Auto-create PVCs that don't exist yet
+            if request.volumes:
+                self._ensure_pvc_volumes(request.volumes)
+
+            # Create workload
             workload_info = self.workload_provider.create_workload(
                 sandbox_id=sandbox_id,
                 namespace=self.namespace,
@@ -632,6 +754,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         "message": "Pod IP is not yet available. The Pod may still be starting.",
                     },
                 )
+            _attach_secure_access_headers(endpoint, workload)
             _attach_egress_auth_headers(endpoint, workload)
             return endpoint
             
@@ -640,4 +763,3 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         except Exception as e:
             logger.error(f"Error getting endpoint for {sandbox_id}:{port}: {e}")
             raise _build_k8s_api_error("get endpoint", e) from e
-

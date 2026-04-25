@@ -111,9 +111,11 @@ async def test_create_sandbox_success(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         extensions={"storage.id": "abc123", "debug": "true"},
         volumes=None,
+        secure_access=True,
     )
     assert isinstance(out.id, str)
     assert "image" in called["body"].to_dict()
+    assert called["body"].to_dict()["secureAccess"] is True
     assert called["body"].to_dict()["extensions"] == {"storage.id": "abc123", "debug": "true"}
     network_policy = called["body"].to_dict()["networkPolicy"]
     assert network_policy["defaultAction"] == "deny"
@@ -121,7 +123,7 @@ async def test_create_sandbox_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_manual_cleanup_omits_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_sandbox_manual_cleanup_preserves_null_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {}
 
     async def _fake_asyncio_detailed(*, client, body):
@@ -147,7 +149,7 @@ async def test_create_sandbox_manual_cleanup_omits_timeout(monkeypatch: pytest.M
         volumes=None,
     )
 
-    assert "timeout" not in called["body"].to_dict()
+    assert called["body"].to_dict()["timeout"] is None
 
 
 @pytest.mark.asyncio

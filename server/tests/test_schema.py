@@ -68,8 +68,30 @@ class TestPVC:
 
     def test_serialization_uses_alias(self):
         backend = PVC(claim_name="my-pvc")
-        data = backend.model_dump(by_alias=True)
-        assert data == {"claimName": "my-pvc"}
+        data = backend.model_dump(by_alias=True, exclude_none=True)
+        assert data == {
+            "claimName": "my-pvc",
+            "createIfNotExists": True,
+            "deleteOnSandboxTermination": False,
+        }
+
+    def test_serialization_with_provisioning_hints(self):
+        """Provisioning hints should serialize with aliases."""
+        backend = PVC(
+            claim_name="my-pvc",
+            storage_class="ssd",
+            storage="5Gi",
+            access_modes=["ReadWriteOnce"],
+        )
+        data = backend.model_dump(by_alias=True, exclude_none=True)
+        assert data == {
+            "claimName": "my-pvc",
+            "createIfNotExists": True,
+            "deleteOnSandboxTermination": False,
+            "storageClass": "ssd",
+            "storage": "5Gi",
+            "accessModes": ["ReadWriteOnce"],
+        }
 
     def test_claim_name_required(self):
         with pytest.raises(ValidationError) as exc_info:
@@ -216,7 +238,11 @@ class TestVolume:
         data = volume.model_dump(by_alias=True, exclude_none=True)
         assert data == {
             "name": "models",
-            "pvc": {"claimName": "shared-models-pvc"},
+            "pvc": {
+                "claimName": "shared-models-pvc",
+                "createIfNotExists": True,
+                "deleteOnSandboxTermination": False,
+            },
             "mountPath": "/mnt/models",
             "readOnly": True,
         }
@@ -288,6 +314,22 @@ class TestCreateSandboxRequestWithVolumes:
             entrypoint=["python", "-c", "print('hello')"],
         )
         assert request.volumes is None
+        assert request.secure_access is False
+
+    def test_request_with_secure_access(self):
+        request = CreateSandboxRequest.model_validate(
+            {
+                "image": {"uri": "python:3.11"},
+                "timeout": 3600,
+                "resourceLimits": {"cpu": "500m", "memory": "512Mi"},
+                "entrypoint": ["python", "-c", "print('hello')"],
+                "secureAccess": True,
+            }
+        )
+        assert request.secure_access is True
+
+        data = request.model_dump(by_alias=True, exclude_none=True)
+        assert data["secureAccess"] is True
 
     def test_request_with_empty_volumes(self):
         request = CreateSandboxRequest(

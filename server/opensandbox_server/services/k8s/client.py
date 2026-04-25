@@ -113,7 +113,7 @@ class K8sClient:
                 try:
                     informer.start()
                 except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning("Failed to start informer for %s/%s: %s", plural, namespace, exc)
+                    logger.warning(f"Failed to start informer for {plural}/{namespace}: {exc}")
                     self._informers.pop(key, None)
                     return None
         return informer
@@ -242,6 +242,44 @@ class K8sClient:
             body=body,
         )
 
+    # ------------------------------------------------------------------
+    # PersistentVolumeClaim operations
+    # ------------------------------------------------------------------
+
+    def get_pvc(
+        self,
+        namespace: str,
+        name: str,
+    ) -> Optional[Any]:
+        """Read a PersistentVolumeClaim by name. Returns None on 404."""
+        if self._read_limiter:
+            self._read_limiter.acquire()
+        try:
+            return self.get_core_v1_api().read_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+            )
+        except ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    def create_pvc(
+        self,
+        namespace: str,
+        body: Any,
+    ) -> Any:
+        """Create a PersistentVolumeClaim."""
+        if self._write_limiter:
+            self._write_limiter.acquire()
+        return self.get_core_v1_api().create_namespaced_persistent_volume_claim(
+            namespace=namespace,
+            body=body,
+        )
+
+    # ------------------------------------------------------------------
+    # Secret operations
+    # ------------------------------------------------------------------
 
     def create_secret(self, namespace: str, body: Any) -> Any:
         """Create a namespaced Secret."""
